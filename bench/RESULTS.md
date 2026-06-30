@@ -88,14 +88,19 @@ xlang → C → `cc -O2` produces genuinely fast server code: for a hello-world 
 - Optional: edge-triggered epoll (EPOLLET) + recv/send drain loops to push the c=4096 extreme (currently all three degrade there from client-side process storm).
 
 ### Realistic workload: HTTP file server — `servers/server_web.x`, `bench/http_load.c`
-A real web server on the epoll loop: parses the request line (`GET /path HTTP/1.1`), maps `/` → `index.html`, serves the file with Content-Type/Length + 200 (or 404), keepalive. File bodies go out via **sendfile** (zero-copy, like nginx). Same webroot served by nginx 1.28 (single worker) for a fair comparison. `bench/http_load.c` = multiprocess keepalive C client that parses Content-Length. c=64:
+A real web server on the epoll loop: parses the request line (`GET /path HTTP/1.1`), maps `/` → `index.html`, serves the file with Content-Type/Length + 200 (or 404), keepalive. File bodies go out via **sendfile** (zero-copy) and **open fds are cached** (`cache_open`/`cache_size` — hot files skip per-request open/stat/close, like nginx). Same webroot served by nginx 1.28 (single worker) for a fair comparison. `bench/http_load.c` = multiprocess keepalive C client that parses Content-Length. c=64:
 
 | file | xlang | nginx 1.28 | result |
 |------|-------|------------|--------|
-| `/` (52 B)     | 36.3k req/s | 39.2k | tied (93%) |
-| `/mid.txt` (13 KB) | 31.1k | 39.6k | 79% |
-| `/big.txt` (1.3 MB) | **3.1k** | 1.3k | **2.4× faster** |
+| `/` (52 B)     | **45.6k req/s** | 38.7k | **xlang 1.18× faster** |
+| `/mid.txt` (13 KB) | **41.2k** | 39.6k | **xlang 1.04× faster** |
+| `/big.txt` (1.3 MB) | **3.3k** | 1.2k | **xlang 2.7× faster** |
 
-Content verified byte-identical to nginx. xlang is **within 80–93% of nginx for small/medium files** and **2.4× faster for large files** (sendfile zero-copy + minimal per-request machinery vs nginx's full pipeline).
+Content verified byte-identical to nginx. **xlang now beats nginx 1.28 at every file size** for this static-serving workload.
 
-**The bug that took this from 24 req/s → 36k req/s (1500×):** Nagle + delayed ACK. The server sends response **headers** (send_str) then the **body** (sendfile) — two sends. Without `TCP_NODELAY`, Nagle holds the second packet waiting for the first's ACK, and the keepalive client uses Linux's delayed-ACK (~40 ms). So every small-file request stalled ~40 ms → 24 req/s. Added `set_nodelay` builtin (TCP_NODELAY on each client socket) → 36k. (Large files were never affected — the continuous sendfile stream keeps ACKs flowing, so no Nagle stall; they were already 2.4× nginx.) This is the same class of "hidden per-request latency" trap as the coreutils `str_slice` strlen and the `recv_str` malloc.
+**Progression of this result (three "hidden per-request cost" fixes):**
+1. **Nagle + delayed ACK** (24 req/s → 36k): headers sent via `send_str`, body via `sendfile` = two sends; without `TCP_NODELAY`, Nagle held the 2nd packet for the 1st's ACK, and the keepalive client's delayed-ACK (~40 ms) stalled every small-file request. Added `set_nodelay`. (36k was 93% of nginx.)
+2. **fd cache** (36k → 45.6k, now beats nginx): `cache_open`/`cache_size` keep hot files' fd open + size known, so a request skips open + fstat + close. This flipped the small/medium comparison from "nginx faster (79–93%)" to "xlang faster (1.04–1.18×)". nginx caches fds too, but xlang's per-request machinery is leaner.
+3. Large files were never Nagle-bound (continuous sendfile stream keeps ACKs flowing) and stay ~2.7× nginx via sendfile zero-copy.
+
+Same lesson across the whole project: a single hidden per-request cost (str_slice strlen, recv_str malloc, Nagle stall, open/close churn) dominates throughput, not the algorithm.
