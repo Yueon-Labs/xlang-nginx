@@ -13,32 +13,33 @@
 #include <time.h>
 #include <sys/wait.h>
 
-/* read one full HTTP response; return 1 if the whole body was received */
+/* read one full HTTP response; return 1 if headers + full body were received.
+ * Uses a static buffer (avoid stack garbage), null-terminates after each recv
+ * so strstr is bounded, and drains exactly Content-Length body bytes. */
 static int read_response(int s) {
-    char hdr[16384];
+    static char buf[32768];
     long hlen = 0;
     char *eoh = NULL;
     while (!eoh) {
-        if (hlen >= 16380) return 0;
-        ssize_t r = recv(s, hdr + hlen, (size_t)(16380 - hlen), 0);
+        if (hlen >= 32760) return 0;
+        ssize_t r = recv(s, buf + hlen, (size_t)(32760 - hlen), 0);
         if (r <= 0) return 0;
         hlen += r;
-        hdr[hlen] = 0;
-        eoh = strstr(hdr, "\r\n\r\n");
+        buf[hlen] = 0;
+        eoh = strstr(buf, "\r\n\r\n");
     }
     long clen = 0;
-    char *p = strstr(hdr, "Content-Length:");
+    char *p = strstr(buf, "Content-Length:");
     if (p) clen = atol(p + 15);
-    char *body = eoh + 4;
-    long have = hlen - (body - hdr);
-    while (have < clen) {
-        long want = clen - have;
-        if (want > 16380) want = 16380;
-        ssize_t r = recv(s, hdr, (size_t)want, 0);
-        if (r <= 0) break;
-        have += r;
+    long body_start = (long)(eoh - buf) + 4;
+    long body_have = hlen - body_start; /* body bytes already buffered */
+    long need = clen - body_have;
+    while (need > 0) {
+        ssize_t r = recv(s, buf, (size_t)(need > 32768 ? 32768 : need), 0);
+        if (r <= 0) return 0;
+        need -= r;
     }
-    return have >= clen ? 1 : 0;
+    return 1;
 }
 
 static void run_child(int port, const char *path, long n, int id) {
