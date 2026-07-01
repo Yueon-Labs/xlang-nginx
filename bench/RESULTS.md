@@ -137,10 +137,10 @@ The most common nginx use case: sit in front of a backend and forward requests. 
 
 | target | c=1 | c=16 | c=64 |
 |--------|-----|------|------|
-| direct (server_http) | 13.1k | 27.1k | 25.6k |
-| **proxy → direct** | 5.1k | 16.3k | 14.7k |
+| direct (server_http) | 12.7k | 25.8k | 24.8k |
+| **proxy → direct** | 4.7k | **26.2k** | **26.5k** |
 
-The proxy does **16.3k req/s at c=16** — a real reverse-proxy throughput. Overhead vs direct (~60% of direct) is dominated by the **fresh upstream TCP connect per request** (no keepalive pool yet — nginx reuses upstream connections). Two other costs: the double recv/send hop, and the relay's accumulate-then-send copy. All three are fixable; the upstream keepalive pool is the highest-leverage next step.
+After adding **upstream keepalive** (each worker reuses ONE persistent upstream connection instead of a fresh `tcp_connect` per request), the proxy **matches or beats direct at c≥16** (was ~60% of direct before). The per-request TCP connect — previously the dominant overhead — is now amortized across thousands of requests per worker. c=1 stays hop-bound (~37% of direct): a proxy is inherently a double-hop, and at single-connection latency there's no concurrency to hide it. Two costs remain: the recv/send relay hop, and (for the rare mid-response upstream death) a dropped connection (no clean retry without response buffering).
 
 **Known limitation — binary REQUEST bodies:** the response relay is now binary-safe (see below), but the *request* forward (`send_str(up, req)`) is still C-string-based, so a binary request body (e.g. a POST upload with NUL bytes) would be truncated. GET proxying and text POSTs are fine.
 

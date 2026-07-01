@@ -14,7 +14,7 @@ HTTP servers written in [xlang](https://github.com/dsadsasdaddas/xlang), benchma
 - `server_web.x` — epoll + sendfile + fd-cache static server (beats nginx 1.28 at every file size)
 - `server_pro.x` — production file server (dir listing, path-traversal protection, access log)
 - `server_http.x` — **full HTTP/1.1**: GET/HEAD routing, `Range`→`206 Partial Content` + `Content-Range`, keep-alive, 404/405/403. 19-case curl suite in `bench/http_test.sh`.
-- `server_proxy.x` — **reverse proxy** (nginx `proxy_pass`): prefork workers, forwards to an upstream and relays the response (Content-Length framed, multi-recv). 8-case suite in `bench/proxy_test.sh`.
+- `server_proxy.x` — **reverse proxy** (nginx `proxy_pass`): prefork workers, forwards to an upstream and relays the response (binary-safe, Content-Length framed). Each worker reuses one persistent upstream connection (keepalive) — matches/beats the backend at c≥16. 9-case suite in `bench/proxy_test.sh`.
 
 ## Benchmarks
 

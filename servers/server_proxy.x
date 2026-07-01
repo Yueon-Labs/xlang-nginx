@@ -6,17 +6,22 @@ module main
 // request to an upstream and relays the response.
 //
 // Model: prefork N workers (nginx/apache prefork), each running a blocking
-// accept-loop on the shared listen socket. Per request a worker:
-//   1. opens a fresh upstream connection (tcp_connect),
-//   2. forwards the request bytes,
-//   3. relays the response: accumulates headers + Content-Length body (or reads
-//      until upstream close when no Content-Length), then sends it whole to the
-//      client in one write (no Nagle split),
-//   4. closes the upstream (client<->proxy keepalive is preserved).
+// accept-loop on the shared listen socket. Each worker keeps ONE persistent
+// upstream connection and reuses it for every request it handles (upstream
+// keepalive — avoids a tcp_connect per request, like nginx). Per request:
+//   1. (lazily) ensure the upstream connection is open,
+//   2. forward the request bytes,
+//   3. relay the response binary-safe: forward each recv'd chunk raw via
+//      send_rbuf while Content-Length-framing from the header text view,
+//   4. keep the upstream open for the next request. If the upstream dies
+//      mid-response (relay returns -1), drop it and reconnect on the next request.
+// SIGPIPE is ignored so a dead-peer send doesn't crash a worker.
 //
-// v1 limitations:
-//   - fresh upstream connection per request (no keepalive pool) — the main
-//     throughput overhead vs nginx (which reuses upstream conns);
+// Limitations:
+//   - a worker reuses ONE upstream conn (not a pool); fine for the prefork model
+//     where each worker handles requests serially;
+//   - no retry on mid-response upstream death (the client already got a partial
+//     response); needs response buffering to retry cleanly;
 //   - request body assumed to fit in one recv (GET/small POST); binary REQUEST
 //     bodies would still be truncated by the text send_str(up, req) forward.
 //
@@ -92,25 +97,24 @@ fn relay(client: i32, upstream: i32): i32 {
             }
         }
     }
+    // If we had a Content-Length but exited via upstream EOF (n==0) before the
+    // body completed, the upstream closed mid-response — signal failure so the
+    // worker can drop the (now-desynced) upstream connection. With no
+    // Content-Length, read-to-EOF is the correct termination, so total is fine.
+    if cl >= 0 {
+        if done == 0 { return -1 }
+    }
     return total
 }
 
-// Proxy a single request: forward req to a fresh upstream, relay the response.
-// Returns 0 on success, -1 if the client closed (caller drops the connection).
-fn proxy_one(client: i32, req: String, upstream_host: String, upstream_port: i32): i32 {
-    let up: i32 = tcp_connect(upstream_host, upstream_port)
-    if up < 0 {
-        send_str(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-        return 0
-    }
-    set_nodelay(up)
-    send_str(up, req)
-    relay(client, up)
-    close_fd(up)
-    return 0
-}
-
+// Each worker keeps ONE persistent upstream connection and reuses it for every
+// request it handles — upstream keepalive, the key throughput win over a fresh
+// tcp_connect per request (which nginx also avoids). If the upstream dies
+// mid-response (relay returns -1, e.g. an idle-timeout close), drop it and let
+// the next request lazily reconnect. SIGPIPE is ignored (in main) so a dead
+// peer send doesn't kill the worker.
 fn worker(listen_fd: i32, upstream_host: String, upstream_port: i32): i32 {
+    let mut up: i32 = -1
     while true {
         let client: i32 = accept(listen_fd)
         if client < 0 { continue }
@@ -118,7 +122,21 @@ fn worker(listen_fd: i32, upstream_host: String, upstream_port: i32): i32 {
         while true {
             let req: String = recv_str(client)
             if str_len(req) == 0 { break }
-            proxy_one(client, req, upstream_host, upstream_port)
+            if up < 0 {
+                up = tcp_connect(upstream_host, upstream_port)
+                if up >= 0 { set_nodelay(up) }
+            }
+            if up < 0 {
+                send_str(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+            } else {
+                send_str(up, req)
+                let r: i32 = relay(client, up)
+                if r < 0 {
+                    close_fd(up)
+                    up = -1
+                    break
+                }
+            }
         }
         close_fd(client)
     }
@@ -136,6 +154,7 @@ fn main(): i32 {
     if argc() >= 5 { workers = str_to_int(argv(4)) }
 
     let listen_fd: i32 = tcp_listen(listen_port)
+    ignore_sigpipe()
     print_raw("xlang server_proxy: ")
     print_raw(int_to_str(workers))
     print_raw(" workers, :")
