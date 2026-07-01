@@ -89,3 +89,30 @@ jobs:
           kill $BE $PX
           rm -rf "$DOCDIR"
           echo "::notice::server_proxy functional test passed (reverse proxy relay)"
+
+      # Functional test for the vhost path-routing proxy: two backends, route
+      # /api/* to one, / to the other. Verifies path-based dispatch.
+      - name: Functional test - server_vhost (path routing)
+        run: |
+          set -e
+          XLANGC=/tmp/xlang/target/release/xlangc
+          "$XLANGC" c servers/server_http.x; cc -O2 -o /tmp/be build/server_http.c
+          "$XLANGC" c servers/server_vhost.x; cc -O2 -o /tmp/vh build/server_vhost.c
+          RA=$(mktemp -d); mkdir -p "$RA/api"
+          echo "from-api" > "$RA/api/index.html"
+          RB=$(mktemp -d)
+          echo "from-root" > "$RB/index.html"
+          /tmp/be "$RA" 28201 &
+          BE1=$!
+          /tmp/be "$RB" 28202 &
+          BE2=$!
+          /tmp/vh 28200 4 /api=127.0.0.1:28201 /=127.0.0.1:28202 &
+          VH=$!
+          sleep 0.7
+          api=$(curl -s http://127.0.0.1:28200/api/index.html)
+          [ "$api" = "from-api" ] || { echo "FAIL /api: [$api]"; kill $BE1 $BE2 $VH; exit 1; }
+          root=$(curl -s http://127.0.0.1:28200/index.html)
+          [ "$root" = "from-root" ] || { echo "FAIL /: [$root]"; kill $BE1 $BE2 $VH; exit 1; }
+          kill $BE1 $BE2 $VH
+          rm -rf "$RA" "$RB"
+          echo "::notice::server_vhost functional test passed (path routing /api vs /)"
