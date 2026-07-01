@@ -8,8 +8,12 @@ HTTP servers written in [xlang](https://github.com/dsadsasdaddas/xlang), benchma
 - `server_loop.x` — looping (blocking) server
 - `server_keepalive.x` — keepalive server
 - `server_prefork.x` — prefork 16-worker server (nginx/apache model)
+- `server_epoll.x` — single-process epoll event loop (nginx's actual model)
 - `server_file.x` — static file serving
 - `server_route.x` — request-path routing (nginx location-style)
+- `server_web.x` — epoll + sendfile + fd-cache static server (beats nginx 1.28 at every file size)
+- `server_pro.x` — production file server (dir listing, path-traversal protection, access log)
+- `server_http.x` — **full HTTP/1.1**: GET/HEAD routing, `Range`→`206 Partial Content` + `Content-Range`, keep-alive, 404/405/403. 19-case curl suite in `bench/http_test.sh`.
 
 ## Benchmarks
 

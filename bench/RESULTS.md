@@ -104,3 +104,26 @@ Content verified byte-identical to nginx. **xlang now beats nginx 1.28 at every 
 3. Large files were never Nagle-bound (continuous sendfile stream keeps ACKs flowing) and stay ~2.7× nginx via sendfile zero-copy.
 
 Same lesson across the whole project: a single hidden per-request cost (str_slice strlen, recv_str malloc, Nagle stall, open/close churn) dominates throughput, not the algorithm.
+
+### HTTP/1.1 maturity — `servers/server_http.x` (Range/206/HEAD/method-routing)
+
+`servers/server_http.x` is the most feature-complete server: full HTTP/1.1 request-line parse (METHOD / PATH / VERSION), header lookup (`header_value`), method routing (**GET** serves body, **HEAD** serves headers only with correct Content-Length, anything else → **405**), **Range / `206 Partial Content`** with `Content-Range` (uses the new `sendfile_range` builtin to sendfile from an offset), path-traversal **403**, **404**, access logging, and keep-alive. `bench/http_test.sh` is a 19-case curl functional suite (GET, HEAD, three Range shapes incl. suffix, bad range, 404/405/403, subdir, sequential keepalive) — all pass on the wzu box.
+
+**Benchmark** (`bench/http_bench.sh`, `bench_py.py` keepalive load gen, 30 000 reqs each, localhost):
+
+| server | c=1 | c=16 | c=64 |
+|--------|-----|------|------|
+| server_web (epoll+sendfile) | 16.8k | 24.9k | 23.4k |
+| server_pro  (+dir listing/logging) | 16.2k | 27.0k | 24.2k |
+| **server_http (+Range/HEAD/routing)** | **16.4k** | **27.7k** | **24.5k** |
+
+Despite doing strictly more work per request than `server_pro`/`server_web`, `server_http` is the **fastest at realistic concurrency (c=16)** and at parity elsewhere.
+
+**Progression — same "hidden per-request cost" lesson again:**
+1. **Naïve version**: 9.4k req/s at c=1 (vs 17k for `server_pro`) — a 1.8× regression from the extra HTTP/1.1 work.
+2. **Hot-path fix 1 — prefix routing**: replaced `parse_method()` (one `str_slice` = one malloc) + two `str_eq` with `str_starts_with(req, "GET " / "HEAD ")` (no allocation). Method routing is now a `strncmp`.
+3. **Hot-path fix 2 — no `str_concat` in `header_value`**: callers pass the colon-suffixed key (`"Range:"`) directly, removing a per-request `str_concat` malloc.
+4. Result: c=1 **9.4k → 16.4k** (+75%), now matching the simpler servers; c=16 the best of the three.
+
+The extra HTTP/1.1 features are *free at concurrency* because at c≥16 the bottleneck is connection multiplexing, not per-request string work — but at c=1 (single-connection latency bound) the per-request malloc count directly divides into req/s, which is why the two zero-alloc fixes mattered there.
+
