@@ -68,3 +68,24 @@ jobs:
           kill $SRV_PID
           rm -rf "$DOCDIR"
           echo "::notice::server_http functional test passed (GET + 404 + HEAD)"
+
+      # Functional test for the reverse proxy: start a backend, start the proxy,
+      # curl through the proxy, verify the response is relayed.
+      - name: Functional test - server_proxy (reverse proxy relay)
+        run: |
+          set -e
+          XLANGC=/tmp/xlang/target/release/xlangc
+          "$XLANGC" c servers/server_http.x; cc -O2 -o /tmp/be build/server_http.c
+          "$XLANGC" c servers/server_proxy.x; cc -O2 -o /tmp/px build/server_proxy.c
+          DOCDIR=$(mktemp -d)
+          echo "via proxy" > "$DOCDIR/index.html"
+          /tmp/be "$DOCDIR" 28110 &
+          BE=$!
+          /tmp/px 28120 4 127.0.0.1:28110 &
+          PX=$!
+          sleep 0.7
+          body=$(curl -s http://127.0.0.1:28120/index.html)
+          [ "$body" = "via proxy" ] || { echo "FAIL: body=[$body]"; kill $BE $PX; exit 1; }
+          kill $BE $PX
+          rm -rf "$DOCDIR"
+          echo "::notice::server_proxy functional test passed (reverse proxy relay)"
