@@ -17,11 +17,12 @@ module main
 // v1 limitations:
 //   - fresh upstream connection per request (no keepalive pool) — the main
 //     throughput overhead vs nginx (which reuses upstream conns);
-//   - request body assumed to fit in one recv (GET/small POST);
-//   - binary response bodies containing NUL bytes are truncated by the
-//     C-string relay (recv_str/sb_push/send_str are all strlen-based). Text,
-//     HTML, JSON, CSS, JS relay correctly. Binary-safe relay needs
-//     length-aware I/O builtins (future language work).
+//   - request body assumed to fit in one recv (GET/small POST); binary REQUEST
+//     bodies would still be truncated by the text send_str(up, req) forward.
+//
+// Response relay IS binary-safe: the relay() helper forwards raw chunks via
+// send_rbuf (length-aware), so images / compressed / arbitrary binary response
+// bodies pass through uncorrupted.
 
 // Position of the byte just past the first "\r\n\r\n", or -1 if not present.
 fn find_header_end(buf: String): i32 {
@@ -54,9 +55,12 @@ fn parse_content_length(buf: String, hdrlen: i32): i32 {
     return str_to_int(numstr)
 }
 
-// Relay the full upstream response to the client. Accumulates into the shared
-// string-builder and sends once at the end (one write = no Nagle stall). Reads
-// exactly headers + Content-Length body bytes, or until upstream closes.
+// Relay the full upstream response to the client, BINARY-SAFE. Forwards each
+// recv'd chunk raw via send_rbuf (length-aware, so NUL bytes in images/etc. are
+// preserved), while parsing Content-Length from the NUL-free header region (via
+// the shared string-builder, which only ever sees header text) to know when the
+// body is complete. Reads exactly headers + Content-Length body bytes, or until
+// upstream closes. Returns total bytes relayed.
 fn relay(client: i32, upstream: i32): i32 {
     sb_new()
     let mut total: i32 = 0
@@ -64,12 +68,16 @@ fn relay(client: i32, upstream: i32): i32 {
     let mut cl: i32 = -1
     let mut done: i32 = 0
     while done == 0 {
-        let chunk: String = recv_str(upstream)
-        let clen: i32 = str_len(chunk)
-        if clen == 0 { break }
-        sb_push(chunk)
-        total = total + clen
+        let n: i32 = recv_n(upstream)
+        if n == 0 { break }
+        send_rbuf(client, n)
+        total = total + n
         if hdrlen < 0 {
+            // Header region is NUL-free, so sb_push (strlen-based) faithfully
+            // accumulates it for parsing; body bytes past the first NUL are
+            // already forwarded raw above and are invisible here — which is fine,
+            // we only need the headers.
+            sb_push(rbuf_str())
             let buf: String = sb_str()
             let he: i32 = find_header_end(buf)
             if he >= 0 {
@@ -79,12 +87,11 @@ fn relay(client: i32, upstream: i32): i32 {
         }
         if hdrlen >= 0 {
             if cl >= 0 {
-                let have_body: i32 = total - hdrlen
-                if have_body >= cl { done = 1 }
+                let body_seen: i32 = total - hdrlen
+                if body_seen >= cl { done = 1 }
             }
         }
     }
-    send_str(client, sb_str())
     return total
 }
 

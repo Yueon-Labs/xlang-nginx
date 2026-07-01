@@ -21,20 +21,23 @@ PROXY_BIN=/tmp/xlang_proxy_test
 ROOT="$(mktemp -d)"
 cleanup() {
     for p in $PIDS; do kill "$p" 2>/dev/null; done
-    pkill -x "$(basename "$BACK_BIN")" 2>/dev/null
-    pkill -x "$(basename "$PROXY_BIN")" 2>/dev/null
+    pkill -f "$BACK_BIN" 2>/dev/null
+    pkill -f "$PROXY_BIN" 2>/dev/null
     rm -rf "$ROOT"
 }
 trap cleanup EXIT
 # Kill any stale instances from a previous/aborted run BEFORE binding the port.
-pkill -x "$(basename "$BACK_BIN")" 2>/dev/null
-pkill -x "$(basename "$PROXY_BIN")" 2>/dev/null
+# Use -f (full cmdline match): -x matches the comm name, which Linux truncates
+# to 15 chars ("xlang_proxy_tes"), so pkill -x xlang_proxy_test never matches.
+pkill -f "$BACK_BIN" 2>/dev/null
+pkill -f "$PROXY_BIN" 2>/dev/null
 sleep 0.2
 
 # ---- fixtures ---------------------------------------------------------------
 printf 'hello from backend\n' > "$ROOT/index.html"          # 19 bytes
 printf '0123456789ABCDEFGHIJ' > "$ROOT/data.txt"            # 20 bytes
 seq 1 30000 > "$ROOT/big.txt"                               # ~170 KB text (multi-recv; no NUL bytes — see note)
+head -c 150000 /dev/urandom > "$ROOT/bin.blob"              # 150 KB BINARY (has NUL bytes — the old failure case)
 
 # ---- build + start backend + proxy -----------------------------------------
 "$XLANGC" c servers/server_http.x -o build/server_http.c >/dev/null 2>&1 || "$XLANGC" c servers/server_http.x >/dev/null 2>&1
@@ -91,10 +94,14 @@ if cmp -s "$ROOT/via_proxy" "$ROOT/big.txt"; then
 else
     echo "  FAIL big.txt != source"; FAIL=$((FAIL+1))
 fi
-# NOTE: binary bodies (containing NUL bytes) are NOT relayed correctly — the
-# C-string relay (recv_str/sb_push/send_str all strlen-based) truncates at the
-# first NUL. Text/HTML/JSON/CSS/JS relay fine. Binary-safe relay needs
-# length-aware I/O builtins (future work).
+
+echo "== BINARY body (150 KB with NUL bytes, multi-recv) byte-identical to source"
+curl -s --max-time 6 "http://127.0.0.1:$PROXY_PORT/bin.blob" -o "$ROOT/bin_via_proxy"
+if cmp -s "$ROOT/bin_via_proxy" "$ROOT/bin.blob"; then
+    echo "  ok   bin.blob byte-identical (binary-safe relay)"; PASS=$((PASS+1))
+else
+    echo "  FAIL bin.blob differs (got $(wc -c < "$ROOT/bin_via_proxy") of $(wc -c < "$ROOT/bin.blob") bytes)"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "RESULT: pass=$PASS fail=$FAIL"

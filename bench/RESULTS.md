@@ -142,6 +142,9 @@ The most common nginx use case: sit in front of a backend and forward requests. 
 
 The proxy does **16.3k req/s at c=16** — a real reverse-proxy throughput. Overhead vs direct (~60% of direct) is dominated by the **fresh upstream TCP connect per request** (no keepalive pool yet — nginx reuses upstream connections). Two other costs: the double recv/send hop, and the relay's accumulate-then-send copy. All three are fixable; the upstream keepalive pool is the highest-leverage next step.
 
-**Known limitation — binary bodies:** the relay is C-string-based (`recv_str`/`sb_push`/`send_str` all `strlen`-terminated), so response bodies containing NUL bytes are truncated at the first NUL. All text content (HTML/JSON/CSS/JS/text/API) relays correctly; binary (images, compressed) needs length-aware I/O builtins. The **backend** (`server_http`) serves binary fine via `sendfile` (raw bytes) — only the proxy's userspace relay has this limit.
+**Known limitation — binary REQUEST bodies:** the response relay is now binary-safe (see below), but the *request* forward (`send_str(up, req)`) is still C-string-based, so a binary request body (e.g. a POST upload with NUL bytes) would be truncated. GET proxying and text POSTs are fine.
+
+**Binary-safe response relay** (added after the initial proxy): three length-aware builtins — `recv_n(fd)` (recv into a static byte buffer, returns the count), `rbuf_str()` (text view of that buffer, valid for the NUL-free header region), `send_rbuf(fd, n)` (send exactly n bytes, looping past partial writes). The relay now forwards each recv'd chunk *raw* via `send_rbuf` (NULs preserved) while parsing `Content-Length` from the header text view for framing. Verified: a 150 KB `/dev/urandom` body (full of NUL bytes) relays byte-identical to the source (`proxy_test.sh` case 9). The **backend** (`server_http`) serves binary via `sendfile` (raw) regardless.
+
 
 

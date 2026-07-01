@@ -12,9 +12,9 @@ PROXY_PORT=28140
 BACK_BIN=/tmp/xlang_bench_backend
 PROXY_BIN=/tmp/xlang_bench_proxy
 ROOT="$(mktemp -d)"
-trap 'pkill -x "$(basename "$BACK_BIN")" 2>/dev/null; pkill -x "$(basename "$PROXY_BIN")" 2>/dev/null; rm -rf "$ROOT"' EXIT
-pkill -x "$(basename "$BACK_BIN")" 2>/dev/null
-pkill -x "$(basename "$PROXY_BIN")" 2>/dev/null
+trap 'pkill -f "$BACK_BIN" 2>/dev/null; pkill -f "$PROXY_BIN" 2>/dev/null; rm -rf "$ROOT"' EXIT
+pkill -f "$BACK_BIN" 2>/dev/null
+pkill -f "$PROXY_BIN" 2>/dev/null
 sleep 0.2
 
 printf 'hello\n' > "$ROOT/index.html"
