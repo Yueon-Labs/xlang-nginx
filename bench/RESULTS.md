@@ -109,15 +109,23 @@ Same lesson across the whole project: a single hidden per-request cost (str_slic
 
 `servers/server_http.x` is the most feature-complete server: full HTTP/1.1 request-line parse (METHOD / PATH / VERSION), header lookup (`header_value`), method routing (**GET** serves body, **HEAD** serves headers only with correct Content-Length, anything else → **405**), **Range / `206 Partial Content`** with `Content-Range` (uses the new `sendfile_range` builtin to sendfile from an offset), path-traversal **403**, **404**, access logging, and keep-alive. `bench/http_test.sh` is a 19-case curl functional suite (GET, HEAD, three Range shapes incl. suffix, bad range, 404/405/403, subdir, sequential keepalive) — all pass on the wzu box.
 
-**Benchmark** (`bench/http_bench.sh`, `bench_py.py` keepalive load gen, 30 000 reqs each, localhost). ⚠️ These are **client-bottlenecked** (python GIL caps the client at ~25–28k; see the proxy-section measurement correction). They're useful for *relative* comparison (same client throughout), but undercount absolute capacity ~2–3×. The accurate `xwrk` client measures `server_http` direct at **~59–79k req/s @ c=16**.
+**Accurate benchmark** (`bench/xwrk_bench.sh`, pure-xlang `xwrk` client, c=16, 3s — no GIL bottleneck):
 
-| server | c=1 | c=16 | c=64 |
+| server (direct) | req/s @ c=16 |
+|-----------------|--------------|
+| server_web (epoll+sendfile) | ~70k |
+| server_pro  (+dir listing/logging) | ~62k |
+| server_http (+Range/HEAD/routing) | ~66k |
+
+All three file servers are in the **~62–70k req/s** band — comparable to each other (the differences are run-to-run noise). The old `bench_py.py` numbers below (~16–28k) were **client-bottlenecked** (python GIL) and undercounted absolute capacity ~2–3×; kept for the relative comparison only.
+
+| server (bench_py.py, relative only) | c=1 | c=16 | c=64 |
 |--------|-----|------|------|
-| server_web (epoll+sendfile) | 16.8k | 24.9k | 23.4k |
-| server_pro  (+dir listing/logging) | 16.2k | 27.0k | 24.2k |
-| **server_http (+Range/HEAD/routing)** | **16.4k** | **27.7k** | **24.5k** |
+| server_web | 16.8k | 24.9k | 23.4k |
+| server_pro  | 16.2k | 27.0k | 24.2k |
+| server_http | 16.4k | 27.7k | 24.5k |
 
-Despite doing strictly more work per request than `server_pro`/`server_web`, `server_http` is the **fastest at realistic concurrency (c=16)** and at parity elsewhere.
+Despite doing strictly more work per request than `server_pro`/`server_web`, `server_http` is **competitive** (within noise of the simpler servers) — the per-request HTTP/1.1 work is free at concurrency.
 
 **Progression — same "hidden per-request cost" lesson again:**
 1. **Naïve version**: 9.4k req/s at c=1 (vs 17k for `server_pro`) — a 1.8× regression from the extra HTTP/1.1 work.

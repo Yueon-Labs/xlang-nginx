@@ -72,7 +72,11 @@ fn main(): i32 {
     if argc() >= 2 {
         docroot = argv(1)
     }
-    let listen_fd: i32 = tcp_listen(28082)
+    let mut port: i32 = 28082
+    if argc() >= 3 {
+        port = str_to_int(argv(2))
+    }
+    let listen_fd: i32 = tcp_listen(port)
     set_nonblock(listen_fd)
     epoll_create()
     epoll_add(listen_fd)
