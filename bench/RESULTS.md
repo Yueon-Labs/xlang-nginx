@@ -142,6 +142,15 @@ The most common nginx use case: sit in front of a backend and forward requests. 
 
 After adding **upstream keepalive** (each worker reuses ONE persistent upstream connection instead of a fresh `tcp_connect` per request), the proxy **matches or beats direct at c≥16** (was ~60% of direct before). The per-request TCP connect — previously the dominant overhead — is now amortized across thousands of requests per worker. c=1 stays hop-bound (~37% of direct): a proxy is inherently a double-hop, and at single-connection latency there's no concurrency to hide it. Two costs remain: the recv/send relay hop, and (for the rare mid-response upstream death) a dropped connection (no clean retry without response buffering).
 
+### Load balancing — multiple upstreams (nginx `upstream {}`)
+
+`server_proxy` now takes 2+ upstreams (`<listen_port> <workers> <up1> [up2] ...`). Each worker is **pinned** to `upstream[worker_index % N]` and keeps one persistent connection to it; with W workers and U upstreams, ~W/U workers land on each, so the kernel's accept distribution spreads requests across backends (round-robin equivalent for the prefork model).
+
+**Distribution** (`bench/lb_test.sh`, 2 backends serving "A"/"B", 200 requests): **A=101, B=99** — essentially ideal 50/50. All 4 checks pass.
+
+**Throughput** (`bench/lb_bench.sh`, c=16): 1 backend = 27.0k req/s, 2 backends = 21.5k req/s. With these *fast* static backends the **proxy itself is the bottleneck** (~27k, single-process epoll backends are faster still), so adding backends doesn't raise raw req/s here. LB pays off when a single backend is the limiter (slow app servers) — that's exactly the nginx use case it mirrors — and it always provides redundancy/failover. (Pushing proxy throughput further would mean an epoll event-loop proxy instead of prefork.)
+
+
 **Known limitation — binary REQUEST bodies:** the response relay is now binary-safe (see below), but the *request* forward (`send_str(up, req)`) is still C-string-based, so a binary request body (e.g. a POST upload with NUL bytes) would be truncated. GET proxying and text POSTs are fine.
 
 **Binary-safe response relay** (added after the initial proxy): three length-aware builtins — `recv_n(fd)` (recv into a static byte buffer, returns the count), `rbuf_str()` (text view of that buffer, valid for the NUL-free header region), `send_rbuf(fd, n)` (send exactly n bytes, looping past partial writes). The relay now forwards each recv'd chunk *raw* via `send_rbuf` (NULs preserved) while parsing `Content-Length` from the header text view for framing. Verified: a 150 KB `/dev/urandom` body (full of NUL bytes) relays byte-identical to the source (`proxy_test.sh` case 9). The **backend** (`server_http`) serves binary via `sendfile` (raw) regardless.

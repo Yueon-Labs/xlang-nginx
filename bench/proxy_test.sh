@@ -47,7 +47,7 @@ cc -O2 -o "$PROXY_BIN" build/server_proxy.c
 
 "$BACK_BIN" "$ROOT" "$BACK_PORT" >/dev/null 2>&1 &
 PIDS="$PIDS $!"
-"$PROXY_BIN" 127.0.0.1 "$BACK_PORT" "$PROXY_PORT" 4 >/dev/null 2>&1 &
+"$PROXY_BIN" "$PROXY_PORT" 4 "127.0.0.1:$BACK_PORT" >/dev/null 2>&1 &
 PIDS="$PIDS $!"
 sleep 0.6
 

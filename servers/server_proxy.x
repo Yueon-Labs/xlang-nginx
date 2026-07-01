@@ -1,9 +1,11 @@
 module main
 
-// server_proxy <upstream_host> <upstream_port> <listen_port> [workers]
+// server_proxy <listen_port> <workers> <upstream1> [<upstream2> ...]
 //
-// HTTP reverse proxy (nginx `proxy_pass` equivalent). Forwards each client
-// request to an upstream and relays the response.
+// HTTP reverse proxy + load balancer (nginx `proxy_pass` + `upstream {}`).
+// Forwards each client request to an upstream and relays the response. With 2+
+// upstreams, workers are spread across them (worker i -> upstream[i % N]) so
+// accept distribution load-balances requests (round-robin equivalent).
 //
 // Model: prefork N workers (nginx/apache prefork), each running a blocking
 // accept-loop on the shared listen socket. Each worker keeps ONE persistent
@@ -107,13 +109,34 @@ fn relay(client: i32, upstream: i32): i32 {
     return total
 }
 
-// Each worker keeps ONE persistent upstream connection and reuses it for every
-// request it handles — upstream keepalive, the key throughput win over a fresh
-// tcp_connect per request (which nginx also avoids). If the upstream dies
-// mid-response (relay returns -1, e.g. an idle-timeout close), drop it and let
-// the next request lazily reconnect. SIGPIPE is ignored (in main) so a dead
-// peer send doesn't kill the worker.
-fn worker(listen_fd: i32, upstream_host: String, upstream_port: i32): i32 {
+// Split "host:port" → host (before the first ':'). For "127.0.0.1:8080" returns
+// "127.0.0.1". (IPv6 not handled — multiple colons — but fine for IPv4/hostname.)
+fn parse_host(s: String): String {
+    let c: i32 = str_find(s, ":")
+    if c < 0 { return s }
+    return str_slice(s, 0, c)
+}
+
+// Split "host:port" → port (int after the first ':'). Defaults to 80 if none.
+fn parse_port(s: String): i32 {
+    let c: i32 = str_find(s, ":")
+    if c < 0 { return 80 }
+    return str_to_int(str_slice(s, c + 1, str_len(s)))
+}
+
+// Each worker is PINNED to one upstream — upstream[worker_index % N_upstreams]
+// — and keeps ONE persistent connection to it (keepalive). With W workers and
+// U upstreams, ~W/U workers pin to each upstream, so the kernel's accept
+// distribution load-balances requests across backends (nginx `upstream {}`
+// round-robin equivalent for the prefork model). If the upstream dies
+// mid-response (relay returns -1), drop it and lazily reconnect. SIGPIPE is
+// ignored (in main) so a dead-peer send doesn't kill the worker.
+fn worker(index: i32, listen_fd: i32): i32 {
+    let nup: i32 = argc() - 3
+    let myidx: i32 = index % nup
+    let up_arg: String = argv(3 + myidx)
+    let upstream_host: String = parse_host(up_arg)
+    let upstream_port: i32 = parse_port(up_arg)
     let mut up: i32 = -1
     while true {
         let client: i32 = accept(listen_fd)
@@ -144,14 +167,11 @@ fn worker(listen_fd: i32, upstream_host: String, upstream_port: i32): i32 {
 }
 
 fn main(): i32 {
-    let mut upstream_host: String = "127.0.0.1"
-    let mut upstream_port: i32 = 28084
-    let mut listen_port: i32 = 28090
-    let mut workers: i32 = 16
-    if argc() >= 2 { upstream_host = argv(1) }
-    if argc() >= 3 { upstream_port = str_to_int(argv(2)) }
-    if argc() >= 4 { listen_port = str_to_int(argv(3)) }
-    if argc() >= 5 { workers = str_to_int(argv(4)) }
+    // CLI: server_proxy <listen_port> <workers> <upstream1> [<upstream2> ...]
+    // each upstream is "host:port". >=2 upstreams => load balancing.
+    let listen_port: i32 = str_to_int(argv(1))
+    let workers: i32 = str_to_int(argv(2))
+    let nup: i32 = argc() - 3
 
     let listen_fd: i32 = tcp_listen(listen_port)
     ignore_sigpipe()
@@ -160,9 +180,14 @@ fn main(): i32 {
     print_raw(" workers, :")
     print_raw(int_to_str(listen_port))
     print_raw(" -> ")
-    print_raw(upstream_host)
-    print_raw(":")
-    print_raw(int_to_str(upstream_port))
+    print_raw(int_to_str(nup))
+    print_raw(" upstream(s):")
+    let mut ui: i32 = 0
+    while ui < nup {
+        print_raw(" ")
+        print_raw(argv(3 + ui))
+        ui = ui + 1
+    }
     print_raw("\n")
 
     let mut i: i32 = 0
@@ -173,6 +198,6 @@ fn main(): i32 {
         }
         i = i + 1
     }
-    worker(listen_fd, upstream_host, upstream_port)
+    worker(i, listen_fd)
     return 0
 }

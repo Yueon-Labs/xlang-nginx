@@ -25,7 +25,7 @@ cc -O2 -o "$BACK_BIN" build/server_http.c
 cc -O2 -o "$PROXY_BIN" build/server_proxy.c
 
 "$BACK_BIN" "$ROOT" "$BACK_PORT" >/dev/null 2>&1 &
-"$PROXY_BIN" 127.0.0.1 "$BACK_PORT" "$PROXY_PORT" 16 >/dev/null 2>&1 &
+"$PROXY_BIN" "$PROXY_PORT" 16 "127.0.0.1:$BACK_PORT" >/dev/null 2>&1 &
 sleep 0.6
 
 rps() {  # rps <port> <conc> → req/s integer
