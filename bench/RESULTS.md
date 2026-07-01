@@ -127,3 +127,21 @@ Despite doing strictly more work per request than `server_pro`/`server_web`, `se
 
 The extra HTTP/1.1 features are *free at concurrency* because at c≥16 the bottleneck is connection multiplexing, not per-request string work — but at c=1 (single-connection latency bound) the per-request malloc count directly divides into req/s, which is why the two zero-alloc fixes mattered there.
 
+### HTTP reverse proxy — `servers/server_proxy.x` (nginx `proxy_pass`)
+
+The most common nginx use case: sit in front of a backend and forward requests. `server_proxy.x` is a **prefork** reverse proxy (N blocking workers, each accept-loop + keepalive). Per request a worker does a fresh `tcp_connect` to the upstream, forwards the request, relays the response by accumulating headers + `Content-Length`-framed body (multi-recv loop) and writing it to the client in one send (no Nagle split). Requires the new `tcp_connect` builtin (DNS-resolving, via `getaddrinfo`).
+
+`bench/proxy_test.sh` (8 cases, all pass on wzu): GET body matches direct, Range `206` + partial body relayed, 404 relayed, and a ~170 KB **multi-recv** text file relayed byte-identical to both direct and the on-disk source.
+
+**Benchmark** (`bench/proxy_bench.sh`, keepalive, 30000 reqs, 6-byte index.html):
+
+| target | c=1 | c=16 | c=64 |
+|--------|-----|------|------|
+| direct (server_http) | 13.1k | 27.1k | 25.6k |
+| **proxy → direct** | 5.1k | 16.3k | 14.7k |
+
+The proxy does **16.3k req/s at c=16** — a real reverse-proxy throughput. Overhead vs direct (~60% of direct) is dominated by the **fresh upstream TCP connect per request** (no keepalive pool yet — nginx reuses upstream connections). Two other costs: the double recv/send hop, and the relay's accumulate-then-send copy. All three are fixable; the upstream keepalive pool is the highest-leverage next step.
+
+**Known limitation — binary bodies:** the relay is C-string-based (`recv_str`/`sb_push`/`send_str` all `strlen`-terminated), so response bodies containing NUL bytes are truncated at the first NUL. All text content (HTML/JSON/CSS/JS/text/API) relays correctly; binary (images, compressed) needs length-aware I/O builtins. The **backend** (`server_http`) serves binary fine via `sendfile` (raw bytes) — only the proxy's userspace relay has this limit.
+
+
