@@ -45,7 +45,7 @@ jobs:
 
       # Functional test: build server_http, start it, curl it, verify the
       # response. The first RUNTIME CI test for the nginx replacement.
-      - name: Functional test: server_http (build → start → curl → verify)
+      - name: Functional test - server_http (build, start, curl, verify)
         run: |
           set -e
           XLANGC=/tmp/xlang/target/release/xlangc
