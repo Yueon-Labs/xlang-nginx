@@ -165,5 +165,24 @@ Old `bench_py.py` numbers (kept for the record; ~2–3× undercounts): direct 25
 
 **Binary-safe response relay** (added after the initial proxy): three length-aware builtins — `recv_n(fd)` (recv into a static byte buffer, returns the count), `rbuf_str()` (text view of that buffer, valid for the NUL-free header region), `send_rbuf(fd, n)` (send exactly n bytes, looping past partial writes). The relay now forwards each recv'd chunk *raw* via `send_rbuf` (NULs preserved) while parsing `Content-Length` from the header text view for framing. Verified: a 150 KB `/dev/urandom` body (full of NUL bytes) relays byte-identical to the source (`proxy_test.sh` case 9). The **backend** (`server_http`) serves binary via `sendfile` (raw) regardless.
 
+### Load balancer linear scaling (2026-07-02, server recovered)
+
+With the pure-xlang `xwrk` client (compiled, no GIL bottleneck), the load
+balancer's scaling is finally measurable. Single worker pool, prefork model,
+upstream keepalive:
+
+| target | req/s @ c=16 |
+|--------|-------------|
+| server_http (direct) | ~65k |
+| proxy → 1 backend | ~75k (≈ direct, not a bottleneck) |
+| proxy → 2 backends | ~105k (1.6× one-backend) |
+| proxy → 3 backends | ~173k (2.7× one-backend) |
+
+**Linear scaling**: each additional backend adds ~50–70k req/s, confirming the
+prefork + keepalive + worker-pinned LB architecture distributes load cleanly.
+The proxy itself is never the bottleneck (75k through one backend vs 65k
+direct — the proxy's keepalive amortizes the backend's accept overhead).
+
+
 
 
