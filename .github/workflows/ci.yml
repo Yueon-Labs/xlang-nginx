@@ -72,9 +72,20 @@ jobs:
           rb=$(curl -s http://127.0.0.1:28099/upload.txt)
           [ "$rb" = "$post_body" ] || { echo "FAIL: POST roundtrip body=[$rb]"; kill $SRV_PID; exit 1; }
           echo "POST upload + GET roundtrip OK"
+          # PUT (idempotent create/replace, 200), then overwrite + verify, then DELETE.
+          put_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data "put-v1" http://127.0.0.1:28099/put.txt)
+          [ "$put_code" = "200" ] || { echo "FAIL: PUT code=$put_code"; kill $SRV_PID; exit 1; }
+          curl -s -o /dev/null -X PUT --data "put-v2" http://127.0.0.1:28099/put.txt
+          pv=$(curl -s http://127.0.0.1:28099/put.txt)
+          [ "$pv" = "put-v2" ] || { echo "FAIL: PUT overwrite body=[$pv]"; kill $SRV_PID; exit 1; }
+          del_code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://127.0.0.1:28099/put.txt)
+          [ "$del_code" = "200" ] || { echo "FAIL: DELETE code=$del_code"; kill $SRV_PID; exit 1; }
+          after=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28099/put.txt)
+          [ "$after" = "404" ] || { echo "FAIL: GET after DELETE code=$after"; kill $SRV_PID; exit 1; }
+          echo "PUT overwrite + DELETE OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
