@@ -83,9 +83,15 @@ jobs:
           after=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28099/put.txt)
           [ "$after" = "404" ] || { echo "FAIL: GET after DELETE code=$after"; kill $SRV_PID; exit 1; }
           echo "PUT overwrite + DELETE OK"
+          # Conditional request: GET captures the ETag, then If-None-Match → 304.
+          etag=$(curl -s -D - -o /dev/null http://127.0.0.1:28099/index.html | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')
+          [ -n "$etag" ] || { echo "FAIL: no ETag header"; kill $SRV_PID; exit 1; }
+          cond=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://127.0.0.1:28099/index.html)
+          [ "$cond" = "304" ] || { echo "FAIL: If-None-Match code=$cond (etag=$etag)"; kill $SRV_PID; exit 1; }
+          echo "ETag + If-None-Match → 304 OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + 304)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.

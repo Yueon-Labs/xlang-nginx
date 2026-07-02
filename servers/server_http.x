@@ -10,6 +10,7 @@ module main
 //   - POST writes the request body to docroot+path (201 Created) — a minimal upload.
 //   - PUT idempotently writes (create/replace, 200 OK); DELETE removes a file (200/404).
 //   - Range: bytes=... → 206 Partial Content + Content-Range (sendfile_range).
+//   - Conditional requests: ETag (size-mtime) + If-None-Match → 304 Not Modified.
 //   - GET/HEAD/POST/PUT/DELETE allowed → otherwise 405 Method Not Allowed.
 //   - 404 Not Found, 403 Forbidden (path traversal), 416-style → 200 full on bad range.
 //   - Access log to stdout: "METHOD PATH STATUS BYTES" (redirect to /dev/null when benching).
@@ -18,6 +19,14 @@ struct Range {
     start: i32
     length: i32
     ok: i32
+}
+
+// ETag from size + mtime (changes when content or modification time changes).
+// Unquoted for simple round-trip comparison against If-None-Match.
+fn etag_of(fpath: String): String {
+    let sz: i32 = stat_field(fpath, 4)
+    let mt: i32 = stat_field(fpath, 5)
+    return int_to_str(sz) + "-" + int_to_str(mt)
 }
 
 fn mime_of(path: String): String {
@@ -173,11 +182,21 @@ fn log_line(method: String, path: String, status: i32, bytes: i32): i32 {
 // head_only=1 → send headers with correct Content-Length, no body.
 // Builds the entire header block in ONE sb pass (sb_str() returns a pointer
 // into the shared buffer, so we must consume it before any sb_new()/sb_push()).
-fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: String): i32 {
+fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: String, inm: String): i32 {
     let ffd: i32 = cache_open(fpath)
     if ffd < 0 { return -1 }
     let size: i32 = cache_size(fpath)
     let mime: String = mime_of(mpath)
+    let etag: String = etag_of(fpath)
+    // Conditional request: If-None-Match matching the ETag → 304 (no body).
+    if str_len(inm) > 0 {
+        if str_eq(inm, etag) == 1 {
+            send_str(fd, "HTTP/1.1 304 Not Modified\r\nETag: ")
+            send_str(fd, etag)
+            send_str(fd, "\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            return -2
+        }
+    }
     let mut off: i32 = 0
     let mut send_len: i32 = size
     let mut is_206: i32 = 0
@@ -199,6 +218,8 @@ fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: 
     sb_push(mime)
     sb_push("\r\nContent-Length: ")
     sb_push(int_to_str(send_len))
+    sb_push("\r\nETag: ")
+    sb_push(etag)
     if is_206 == 1 {
         sb_push("\r\nContent-Range: bytes ")
         sb_push(int_to_str(off))
@@ -342,10 +363,15 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
     }
     let full: String = str_concat(docroot, mpath)
     let range_hdr: String = header_value(req, "Range:")
+    let inm: String = header_value(req, "If-None-Match:")
     if is_dir(full) {
         let idx: String = str_concat(full, "/index.html")
         if file_exists(idx) {
-            let n: i32 = serve_file(fd, idx, mpath, head_only, range_hdr)
+            let n: i32 = serve_file(fd, idx, mpath, head_only, range_hdr, inm)
+            if n == -2 {
+                log_line(mlabel, mpath, 304, 0)
+                return 0
+            }
             let mut code: i32 = 200
             if str_len(range_hdr) > 0 { code = 206 }
             log_line(mlabel, mpath, code, n)
@@ -356,10 +382,14 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
         return 0
     }
     if file_exists(full) {
-        let n: i32 = serve_file(fd, full, mpath, head_only, range_hdr)
-        if n < 0 {
+        let n: i32 = serve_file(fd, full, mpath, head_only, range_hdr, inm)
+        if n == -1 {
             send_str(fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
             log_line(mlabel, mpath, 500, 0)
+            return 0
+        }
+        if n == -2 {
+            log_line(mlabel, mpath, 304, 0)
             return 0
         }
         let mut code: i32 = 200
