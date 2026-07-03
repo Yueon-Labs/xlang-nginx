@@ -89,9 +89,15 @@ jobs:
           cond=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://127.0.0.1:28099/index.html)
           [ "$cond" = "304" ] || { echo "FAIL: If-None-Match code=$cond (etag=$etag)"; kill $SRV_PID; exit 1; }
           echo "ETag + If-None-Match → 304 OK"
+          # Conditional request: GET captures Last-Modified, then If-Modified-Since → 304.
+          lm=$(curl -s -D - -o /dev/null http://127.0.0.1:28099/index.html | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}')
+          [ -n "$lm" ] || { echo "FAIL: no Last-Modified header"; kill $SRV_PID; exit 1; }
+          cond2=$(curl -s -o /dev/null -w '%{http_code}' -H "If-Modified-Since: $lm" http://127.0.0.1:28099/index.html)
+          [ "$cond2" = "304" ] || { echo "FAIL: If-Modified-Since code=$cond2 (lm=$lm)"; kill $SRV_PID; exit 1; }
+          echo "Last-Modified + If-Modified-Since → 304 OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + 304)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + ETag-304 + LastMod-304)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
