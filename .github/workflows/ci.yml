@@ -105,9 +105,20 @@ jobs:
           get_hdrs=$(curl -s -D - -o /dev/null http://127.0.0.1:28099/index.html | tr -d '\r')
           echo "$get_hdrs" | grep -qi '^access-control-allow-origin: \*$' || { echo "FAIL: GET missing ACAO"; kill $SRV_PID; exit 1; }
           echo "CORS (OPTIONS preflight + ACAO on GET) OK"
+          # Directory trailing-slash redirect: GET /sub (a dir) → 301 + Location: /sub/.
+          mkdir -p "$DOCDIR/sub"
+          echo "in sub" > "$DOCDIR/sub/index.html"
+          red_code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28099/sub)
+          [ "$red_code" = "301" ] || { echo "FAIL: dir redirect code=$red_code"; kill $SRV_PID; exit 1; }
+          red_loc=$(curl -s -D - -o /dev/null http://127.0.0.1:28099/sub | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+          [ "$red_loc" = "/sub/" ] || { echo "FAIL: dir redirect Location=$red_loc"; kill $SRV_PID; exit 1; }
+          # The slashed path serves the index, and root "/" still works (no redirect loop).
+          sub_body=$(curl -s http://127.0.0.1:28099/sub/)
+          [ "$sub_body" = "in sub" ] || { echo "FAIL: /sub/ body=[$sub_body]"; kill $SRV_PID; exit 1; }
+          echo "directory trailing-slash redirect (301 + Location + /sub/ serves index) OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.

@@ -15,6 +15,8 @@ module main
 //   - OPTIONS → 204 No Content with CORS preflight headers (browser fetch support).
 //   - Access-Control-Allow-Origin: * on data responses, so browser frontends can
 //     fetch cross-origin.
+//   - Directory redirect: GET /dir → 301 Moved Permanently → /dir/ (so relative
+//     links in an index/ listing resolve correctly — standard nginx/httpd).
 //   - 404 Not Found, 403 Forbidden (path traversal), 416-style → 200 full on bad range.
 //   - Access log to stdout: "METHOD PATH STATUS BYTES" (redirect to /dev/null when benching).
 
@@ -393,6 +395,16 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
     let inm: String = header_value(req, "If-None-Match:")
     let ims: String = header_value(req, "If-Modified-Since:")
     if is_dir(full) {
+        // Redirect "/dir" -> "/dir/" (301) so relative links in an index or
+        // listing resolve against the directory — standard nginx/httpd behavior.
+        // Skip when the path already ends in "/".
+        if str_char_at(mpath, str_len(mpath) - 1) != 47 {
+            send_str(fd, "HTTP/1.1 301 Moved Permanently\r\nLocation: ")
+            send_str(fd, mpath)
+            send_str(fd, "/\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            log_line(mlabel, mpath, 301, 0)
+            return 0
+        }
         let idx: String = str_concat(full, "/index.html")
         if file_exists(idx) {
             let n: i32 = serve_file(fd, idx, mpath, head_only, range_hdr, inm, ims)
