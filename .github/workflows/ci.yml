@@ -150,8 +150,14 @@ jobs:
           wbody=$(curl -s http://127.0.0.1:28101/index.html)
           [ "$wbody" = "hello from CI" ] || { echo "FAIL: -w GET body=[$wbody]"; kill $WK_PID $SRV_PID; exit 1; }
           fail=0
-          for i in $(seq 1 8); do ( curl -s http://127.0.0.1:28101/index.html > /tmp/wk$i.out ) & done
-          wait
+          pids=""
+          for i in $(seq 1 8); do
+            curl -s http://127.0.0.1:28101/index.html > /tmp/wk$i.out &
+            pids="$pids $!"
+          done
+          # wait ONLY for the curl jobs (bare `wait` would also wait on the
+          # long-running server backgrounds above and hang forever).
+          wait $pids
           for i in $(seq 1 8); do [ "$(cat /tmp/wk$i.out)" = "hello from CI" ] || fail=1; done
           [ "$fail" = 0 ] || { echo "FAIL: -w concurrent requests"; kill $WK_PID $SRV_PID; exit 1; }
           rm -f /tmp/wk*.out
