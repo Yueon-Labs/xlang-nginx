@@ -95,9 +95,19 @@ jobs:
           cond2=$(curl -s -o /dev/null -w '%{http_code}' -H "If-Modified-Since: $lm" http://127.0.0.1:28099/index.html)
           [ "$cond2" = "304" ] || { echo "FAIL: If-Modified-Since code=$cond2 (lm=$lm)"; kill $SRV_PID; exit 1; }
           echo "Last-Modified + If-Modified-Since → 304 OK"
+          # CORS: OPTIONS preflight → 204 + Access-Control-Allow-Origin/Methods.
+          opt_code=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS http://127.0.0.1:28099/index.html)
+          [ "$opt_code" = "204" ] || { echo "FAIL: OPTIONS code=$opt_code"; kill $SRV_PID; exit 1; }
+          opt_hdrs=$(curl -s -D - -o /dev/null -X OPTIONS http://127.0.0.1:28099/index.html | tr -d '\r')
+          echo "$opt_hdrs" | grep -qi '^access-control-allow-origin: \*$' || { echo "FAIL: OPTIONS missing ACAO"; kill $SRV_PID; exit 1; }
+          echo "$opt_hdrs" | grep -qi 'access-control-allow-methods:.*OPTIONS' || { echo "FAIL: OPTIONS missing Allow-Methods"; kill $SRV_PID; exit 1; }
+          # CORS: a normal GET response carries Access-Control-Allow-Origin.
+          get_hdrs=$(curl -s -D - -o /dev/null http://127.0.0.1:28099/index.html | tr -d '\r')
+          echo "$get_hdrs" | grep -qi '^access-control-allow-origin: \*$' || { echo "FAIL: GET missing ACAO"; kill $SRV_PID; exit 1; }
+          echo "CORS (OPTIONS preflight + ACAO on GET) OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + ETag-304 + LastMod-304)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
