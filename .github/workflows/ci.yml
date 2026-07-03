@@ -234,7 +234,8 @@ jobs:
           echo "hello over TLS" > "$DOCDIR/index.html"
           # Self-signed cert (no passphrase). openssl is in libssl-dev.
           openssl req -x509 -newkey rsa:2048 -keyout /tmp/tlskey.pem -out /tmp/tlscert.pem -days 1 -nodes -subj "/CN=localhost" >/dev/null 2>&1
-          /tmp/server_tls "$DOCDIR" 28102 /tmp/tlscert.pem /tmp/tlskey.pem &
+          # -w 2: prefork 2 TLS workers (SO_REUSEPORT) so concurrent HTTPS works.
+          /tmp/server_tls "$DOCDIR" 28102 /tmp/tlscert.pem /tmp/tlskey.pem -w 2 &
           TLS_PID=$!
           sleep 0.5
           tls_body=$(curl -k -s https://127.0.0.1:28102/index.html || echo CURL_FAILED)
@@ -242,10 +243,18 @@ jobs:
             echo "FAIL: HTTPS GET body=[$tls_body]"
             kill $TLS_PID 2>/dev/null; rm -rf "$DOCDIR" /tmp/tls*.pem; exit 1
           fi
-          # A second request (new connection) also works.
-          tls_body2=$(curl -k -s https://127.0.0.1:28102/index.html || echo CURL_FAILED)
-          [ "$tls_body2" = "hello over TLS" ] || { echo "FAIL: HTTPS 2nd request"; kill $TLS_PID; exit 1; }
+          # Concurrent HTTPS requests (4 in parallel) — exercises the worker pool.
+          fail=0
+          pids=""
+          for i in $(seq 1 4); do
+            curl -k -s https://127.0.0.1:28102/index.html > /tmp/tlswk$i.out &
+            pids="$pids $!"
+          done
+          wait $pids
+          for i in $(seq 1 4); do [ "$(cat /tmp/tlswk$i.out)" = "hello over TLS" ] || fail=1; done
+          [ "$fail" = 0 ] || { echo "FAIL: HTTPS concurrent requests"; kill $TLS_PID; exit 1; }
+          rm -f /tmp/tlswk*.out
           kill $TLS_PID 2>/dev/null
           pkill -P $TLS_PID 2>/dev/null || true
           rm -rf "$DOCDIR" /tmp/tls*.pem
-          echo "::notice::server_tls HTTPS functional test passed (self-signed TLS, GET via curl -k)"
+          echo "::notice::server_tls HTTPS functional test passed (-w 2, self-signed TLS, 4 concurrent curl -k)"
