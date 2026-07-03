@@ -535,13 +535,6 @@ fn main(): i32 {
         if argc() >= 2 { docroot = argv(1) }
         if argc() >= 3 { port = str_to_int(argv(2)) }
     }
-    let mut listen_fd: i32 = 0
-    if workers > 1 {
-        listen_fd = tcp_listen_reuseport(port)
-    } else {
-        listen_fd = tcp_listen(port)
-    }
-    set_nonblock(listen_fd)
     print_raw("xlang server_http on port ")
     print_raw(int_to_str(port))
     print_raw(", docroot=")
@@ -551,9 +544,11 @@ fn main(): i32 {
         print_raw(int_to_str(workers))
     }
     print_raw("\n")
-    // Prefork worker pool (nginx model): each child inherits listen_fd; with
-    // SO_REUSEPORT the kernel hands each new connection to exactly one worker.
-    // The parent process is worker 0. workers==1 skips this (single process).
+    // Prefork worker pool (nginx model). Fork BEFORE creating the listen socket
+    // so each worker creates its OWN socket on the shared port — true SO_REUSEPORT
+    // load-balancing (the kernel hashes each connection to one worker's socket,
+    // no thundering herd of all workers waking per connection). The parent is
+    // worker 0. workers==1 skips the fork (single process).
     if workers > 1 {
         let mut wi: i32 = 1
         while wi < workers {
@@ -564,6 +559,16 @@ fn main(): i32 {
             wi += 1
         }
     }
+    // Each worker creates its own listen socket. With workers>1 every worker
+    // sets SO_REUSEPORT and binds the same port, so the kernel spreads incoming
+    // connections across the N sockets (one acceptor woken per connection).
+    let mut listen_fd: i32 = 0
+    if workers > 1 {
+        listen_fd = tcp_listen_reuseport(port)
+    } else {
+        listen_fd = tcp_listen(port)
+    }
+    set_nonblock(listen_fd)
     // Each worker (parent + children) runs its own epoll loop on the shared port.
     epoll_create()
     epoll_add(listen_fd)
