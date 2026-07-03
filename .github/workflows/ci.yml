@@ -85,6 +85,15 @@ jobs:
           [ "$rb_size" = "200000" ] || { echo "FAIL: big POST roundtrip size=$rb_size (want 200000)"; kill $SRV_PID; exit 1; }
           rm -f /tmp/xl_big.bin
           echo "large POST (200KB, multi-segment) roundtrip OK"
+          # Max request size: a POST claiming a 999MB body (Content-Length > the
+          # 16 MiB cap) → 413 Payload Too Large. Send just the headers via a raw
+          # socket (no body) — the server rejects on the header, no buffering.
+          exec 3<>/dev/tcp/127.0.0.1/28099
+          printf 'POST /huge HTTP/1.1\r\nHost: x\r\nContent-Length: 999999999\r\nConnection: close\r\n\r\n' >&3
+          huge_resp=$(timeout 2 head -c 30 <&3 || true)
+          exec 3<&- 3>&-
+          echo "$huge_resp" | grep -q "413" || { echo "FAIL: huge Content-Length not 413: [$huge_resp]"; kill $SRV_PID; exit 1; }
+          echo "max request size (Content-Length 999MB -> 413) OK"
           # PUT (idempotent create/replace, 200), then overwrite + verify, then DELETE.
           put_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data "put-v1" http://127.0.0.1:28099/put.txt)
           [ "$put_code" = "200" ] || { echo "FAIL: PUT code=$put_code"; kill $SRV_PID; exit 1; }
@@ -171,7 +180,7 @@ jobs:
           echo "multi-worker (-w 4, SO_REUSEPORT) serving + 8 concurrent requests OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config + multi-worker)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + max-size + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config + multi-worker)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
