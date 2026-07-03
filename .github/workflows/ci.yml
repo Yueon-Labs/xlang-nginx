@@ -126,9 +126,24 @@ jobs:
           sub_body=$(curl -s http://127.0.0.1:28099/sub/)
           [ "$sub_body" = "in sub" ] || { echo "FAIL: /sub/ body=[$sub_body]"; kill $SRV_PID; exit 1; }
           echo "directory trailing-slash redirect (301 + Location + /sub/ serves index) OK"
+          # Config-driven mode: -c <conf> sets root/listen/index. Run a second
+          # instance on another port; GET / must serve the configured index file.
+          echo "from config" > "$DOCDIR/home.html"
+          printf 'listen 28100;\nroot %s;\nindex home.html;\n' "$DOCDIR" > /tmp/xl.conf
+          /tmp/server_http -c /tmp/xl.conf &
+          CFG_PID=$!
+          sleep 0.5
+          cfg_body=$(curl -s http://127.0.0.1:28100/)
+          [ "$cfg_body" = "from config" ] || { echo "FAIL: -c config GET / body=[$cfg_body]"; kill $CFG_PID $SRV_PID; exit 1; }
+          # The configured root still serves other files normally.
+          cfg_other=$(curl -s http://127.0.0.1:28100/index.html)
+          [ "$cfg_other" = "hello from CI" ] || { echo "FAIL: -c config /index.html body=[$cfg_other]"; kill $CFG_PID $SRV_PID; exit 1; }
+          kill $CFG_PID
+          rm -f /tmp/xl.conf
+          echo "config-driven (-c root/listen/index, GET / -> home.html) OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
