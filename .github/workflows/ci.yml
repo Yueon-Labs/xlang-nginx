@@ -141,9 +141,34 @@ jobs:
           kill $CFG_PID
           rm -f /tmp/xl.conf
           echo "config-driven (-c root/listen/index, GET / -> home.html) OK"
+          # Multi-worker prefork mode (-w N, SO_REUSEPORT): 4 workers on another
+          # port; verify it serves, and that 8 concurrent requests all succeed
+          # (proving the worker pool — not just one process — handles connections).
+          /tmp/server_http "$DOCDIR" 28101 -w 4 > /tmp/wk.log 2>&1 &
+          WK_PID=$!
+          sleep 1
+          wbody=$(curl -s http://127.0.0.1:28101/index.html || echo CURL_FAILED)
+          if [ "$wbody" != "hello from CI" ]; then
+            echo "FAIL: -w GET body=[$wbody]"
+            echo "--- worker server log (startup + access log) ---"; cat /tmp/wk.log
+            kill $WK_PID $SRV_PID; exit 1
+          fi
+          fail=0
+          pids=""
+          for i in $(seq 1 8); do
+            curl -s http://127.0.0.1:28101/index.html > /tmp/wk$i.out &
+            pids="$pids $!"
+          done
+          wait $pids
+          for i in $(seq 1 8); do [ "$(cat /tmp/wk$i.out)" = "hello from CI" ] || fail=1; done
+          [ "$fail" = 0 ] || { echo "FAIL: -w concurrent requests"; cat /tmp/wk.log; kill $WK_PID $SRV_PID; exit 1; }
+          rm -f /tmp/wk*.out
+          kill $WK_PID 2>/dev/null
+          pkill -P $WK_PID 2>/dev/null || true
+          echo "multi-worker (-w 4, SO_REUSEPORT) serving + 8 concurrent requests OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config + multi-worker)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
