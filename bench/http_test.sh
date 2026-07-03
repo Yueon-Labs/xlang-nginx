@@ -26,6 +26,13 @@ printf '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' > "$ROOT
 printf '<html><body>home</body></html>' > "$ROOT/index.html"
 mkdir -p "$ROOT/sub"
 printf 'second page' > "$ROOT/sub/page.html"
+# MIME fixtures
+printf 'body{}' > "$ROOT/style.css"
+printf 'console.log(1)' > "$ROOT/app.js"
+printf '{"a":1}' > "$ROOT/data.json"
+printf 'pngdata' > "$ROOT/pic.png"
+printf 'pngdata' > "$ROOT/UPPER.PNG"
+printf '<old/>' > "$ROOT/old.html.bak"
 
 # ---- build & start ----------------------------------------------------------
 echo "== building server_http with: $XLANGC"
@@ -120,6 +127,18 @@ print(n)
 PY
 )
 check "keepalive 3 responses" "3" "$out"
+
+echo "== MIME Content-Type (extension suffix match, case-insensitive)"
+mime_ct() { curl -s -I "$(url "$1")" | tr -d '\r' | grep -i '^content-type:' | awk '{print $2}'; }
+check "MIME .html"   "text/html"              "$(mime_ct /index.html)"
+check "MIME .txt"    "text/plain"             "$(mime_ct /data.txt)"
+check "MIME .css"    "text/css"               "$(mime_ct /style.css)"
+check "MIME .js"     "application/javascript" "$(mime_ct /app.js)"
+check "MIME .json"   "application/json"       "$(mime_ct /data.json)"
+check "MIME .png"    "image/png"              "$(mime_ct /pic.png)"
+check "MIME case-insens UPPER.PNG" "image/png" "$(mime_ct /UPPER.PNG)"
+# Regression: substring matching would wrongly map ".html.bak" → text/html.
+check "MIME .html.bak NOT html" "application/octet-stream" "$(mime_ct /old.html.bak)"
 
 echo
 echo "RESULT: pass=$PASS fail=$FAIL"

@@ -56,12 +56,26 @@ jobs:
           cc -O2 -o /tmp/server_http build/server_http.c
           DOCDIR=$(mktemp -d)
           echo "hello from CI" > "$DOCDIR/index.html"
+          printf 'body{}' > "$DOCDIR/style.css"
+          printf 'console.log(1)' > "$DOCDIR/app.js"
+          printf 'pngdata' > "$DOCDIR/pic.png"
+          printf 'pngdata' > "$DOCDIR/UPPER.PNG"
+          printf '<old/>' > "$DOCDIR/old.html.bak"
           /tmp/server_http "$DOCDIR" 28099 &
           SRV_PID=$!
           sleep 0.5
           # GET
           body=$(curl -s http://127.0.0.1:28099/index.html)
           [ "$body" = "hello from CI" ] || { echo "FAIL: body=[$body]"; kill $SRV_PID; exit 1; }
+          # MIME Content-Type (extension suffix match, case-insensitive).
+          # Regression: substring matching would map ".html.bak" → text/html.
+          ct_html=$(curl -s -I http://127.0.0.1:28099/index.html | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print $2}')
+          [ "$ct_html" = "text/html" ] || { echo "FAIL: MIME .html=[$ct_html]"; kill $SRV_PID; exit 1; }
+          ct_bak=$(curl -s -I http://127.0.0.1:28099/old.html.bak | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print $2}')
+          [ "$ct_bak" = "application/octet-stream" ] || { echo "FAIL: .html.bak should be octet-stream not [$ct_bak]"; kill $SRV_PID; exit 1; }
+          ct_png=$(curl -s -I http://127.0.0.1:28099/UPPER.PNG | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print $2}')
+          [ "$ct_png" = "image/png" ] || { echo "FAIL: UPPER.PNG should be image/png not [$ct_png]"; kill $SRV_PID; exit 1; }
+          echo "MIME Content-Type (suffix match, case-insensitive, .html.bak→octet-stream) OK"
           # 404
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28099/nonexistent)
           [ "$code" = "404" ] || { echo "FAIL: 404 code=$code"; kill $SRV_PID; exit 1; }
@@ -180,7 +194,7 @@ jobs:
           echo "multi-worker (-w 4, SO_REUSEPORT) serving + 8 concurrent requests OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + max-size + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config + multi-worker)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + MIME + large-POST + max-size + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config + multi-worker)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
