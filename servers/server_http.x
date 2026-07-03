@@ -1,7 +1,9 @@
 module main
 
-// server_http <docroot> [port] — HTTP/1.1 file server with method routing,
-// Range/partial-content (206), HEAD, POST/PUT upload, DELETE, and keep-alive.
+// server_http <docroot> [port] | -c <conf> — HTTP/1.1 file server with method
+// routing, Range/partial-content (206), HEAD, POST/PUT upload, DELETE, keep-alive.
+// `-c <conf>` is config-driven (nginx-style directives: root/listen/index;);
+// otherwise the positional <docroot> [port] form is used.
 //
 // Beyond server_pro:
 //   - Parses the request line into METHOD / PATH / VERSION.
@@ -68,8 +70,8 @@ fn parse_body(req: String): String {
     return str_slice(req, idx + 4, str_len(req))
 }
 
-// Path = token between first and second space; "/index.html" for "/".
-fn parse_path(req: String): String {
+// Path = token between first and second space; "/<index_file>" for "/".
+fn parse_path(req: String, index_file: String): String {
     let sp1: i32 = str_find(req, " ")
     if sp1 < 0 { return "/" }
     let rest: String = str_slice(req, sp1 + 1, str_len(req))
@@ -85,7 +87,7 @@ fn parse_path(req: String): String {
         path = str_slice(path, 0, q)
     }
     if str_eq(path, "/") {
-        path = "/index.html"
+        path = "/" + index_file
     }
     return path
 }
@@ -294,8 +296,8 @@ fn serve_dir_listing(fd: i32, fpath: String, mpath: String, head_only: i32): i32
     return blen
 }
 
-fn handle(fd: i32, docroot: String, req: String): i32 {
-    let mpath: String = parse_path(req)
+fn handle(fd: i32, docroot: String, req: String, index_file: String): i32 {
+    let mpath: String = parse_path(req, index_file)
     // Prefix-check the method (avoids a per-request str_slice for routing).
     let is_get: i32 = str_starts_with(req, "GET ")
     let is_head: i32 = str_starts_with(req, "HEAD ")
@@ -405,7 +407,7 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
             log_line(mlabel, mpath, 301, 0)
             return 0
         }
-        let idx: String = str_concat(full, "/index.html")
+        let idx: String = str_concat(full, str_concat("/", index_file))
         if file_exists(idx) {
             let n: i32 = serve_file(fd, idx, mpath, head_only, range_hdr, inm, ims)
             if n == -2 {
@@ -457,14 +459,72 @@ fn request_complete(req: String): i32 {
     return 0
 }
 
+// Server configuration parsed from a -c <conf> file (nginx-style, one
+// "directive value;" per line, '#' comments). Unset directives keep defaults.
+struct Config {
+    root: String
+    listen: i32
+    index: String
+}
+
+// Parse a config file into a Config. Directives: `root <dir>;`, `listen <port>;`,
+// `index <file>;`. Lines starting with '#' are comments. Whitespace and a
+// trailing ';' on the value are tolerated. Pure (no sockets) — testable locally.
+fn parse_conf(path: String): Config {
+    let mut c: Config = Config { root: ".", listen: 8080, index: "index.html" }
+    let s: String = read_file(path)
+    let lines: Vec<String> = str_split(str_trim(s), "\n")
+    let n: i32 = vec_len(lines)
+    let mut i: i32 = 0
+    while i < n {
+        let line: String = str_trim(lines[i])
+        if str_len(line) > 0 {
+            if str_char_at(line, 0) != 35 {
+                let sp: i32 = str_find(line, " ")
+                if sp > 0 {
+                    let key: String = str_slice(line, 0, sp)
+                    let mut val: String = str_trim(str_slice(line, sp + 1, str_len(line)))
+                    if str_len(val) > 0 {
+                        if str_char_at(val, str_len(val) - 1) == 59 {
+                            val = str_slice(val, 0, str_len(val) - 1)
+                        }
+                    }
+                    if key == "root" { c.root = val }
+                    if key == "listen" { c.listen = str_to_int(val) }
+                    if key == "index" { c.index = val }
+                }
+            }
+        }
+        i += 1
+    }
+    return c
+}
+
 fn main(): i32 {
     let mut docroot: String = "webroot"
-    if argc() >= 2 {
-        docroot = argv(1)
-    }
     let mut port: i32 = 28084
-    if argc() >= 3 {
-        port = str_to_int(argv(2))
+    let mut index_file: String = "index.html"
+    // `-c <conf>`: config-driven (root/listen/index from a file). Otherwise the
+    // positional `<docroot> [port]` form is used (backwards-compatible).
+    let mut conf_path: String = ""
+    let mut ai: i32 = 1
+    while ai < argc() {
+        if argv(ai) == "-c" {
+            if ai + 1 < argc() {
+                conf_path = argv(ai + 1)
+                ai += 1
+            }
+        }
+        ai += 1
+    }
+    if str_len(conf_path) > 0 {
+        let c: Config = parse_conf(conf_path)
+        docroot = c.root
+        port = c.listen
+        index_file = c.index
+    } else {
+        if argc() >= 2 { docroot = argv(1) }
+        if argc() >= 3 { port = str_to_int(argv(2)) }
     }
     let listen_fd: i32 = tcp_listen(port)
     set_nonblock(listen_fd)
@@ -509,7 +569,7 @@ fn main(): i32 {
                 } else {
                     bufs[fd] = str_concat(bufs[fd], chunk)
                     if request_complete(bufs[fd]) == 1 {
-                        handle(fd, docroot, bufs[fd])
+                        handle(fd, docroot, bufs[fd], index_file)
                         bufs[fd] = ""
                     }
                 }
@@ -519,7 +579,7 @@ fn main(): i32 {
                     epoll_del(fd)
                     close_fd(fd)
                 } else {
-                    handle(fd, docroot, req)
+                    handle(fd, docroot, req, index_file)
                 }
             }
         }
