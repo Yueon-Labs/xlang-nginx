@@ -164,7 +164,7 @@ jobs:
           [ "$fail" = 0 ] || { echo "FAIL: -w concurrent requests"; cat /tmp/wk.log; kill $WK_PID $SRV_PID; exit 1; }
           rm -f /tmp/wk*.out
           kill $WK_PID 2>/dev/null
-          pkill -P $WK_PID 2>/dev/null
+          pkill -P $WK_PID 2>/dev/null || true
           echo "multi-worker (-w 4, SO_REUSEPORT) serving + 8 concurrent requests OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
