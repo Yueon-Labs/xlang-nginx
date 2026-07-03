@@ -182,17 +182,29 @@ fn log_line(method: String, path: String, status: i32, bytes: i32): i32 {
 // head_only=1 → send headers with correct Content-Length, no body.
 // Builds the entire header block in ONE sb pass (sb_str() returns a pointer
 // into the shared buffer, so we must consume it before any sb_new()/sb_push()).
-fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: String, inm: String): i32 {
+fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: String, inm: String, ims: String): i32 {
     let ffd: i32 = cache_open(fpath)
     if ffd < 0 { return -1 }
     let size: i32 = cache_size(fpath)
     let mime: String = mime_of(mpath)
     let etag: String = etag_of(fpath)
-    // Conditional request: If-None-Match matching the ETag → 304 (no body).
+    let lastmod: String = fmt_http_date(stat_field(fpath, 5))
+    // Conditional request: If-None-Match (ETag) → 304.
     if str_len(inm) > 0 {
         if str_eq(inm, etag) == 1 {
             send_str(fd, "HTTP/1.1 304 Not Modified\r\nETag: ")
             send_str(fd, etag)
+            send_str(fd, "\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            return -2
+        }
+    }
+    // Conditional request: If-Modified-Since (Last-Modified) → 304.
+    if str_len(ims) > 0 {
+        if str_eq(ims, lastmod) == 1 {
+            send_str(fd, "HTTP/1.1 304 Not Modified\r\nETag: ")
+            send_str(fd, etag)
+            send_str(fd, "\r\nLast-Modified: ")
+            send_str(fd, lastmod)
             send_str(fd, "\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
             return -2
         }
@@ -220,6 +232,8 @@ fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: 
     sb_push(int_to_str(send_len))
     sb_push("\r\nETag: ")
     sb_push(etag)
+    sb_push("\r\nLast-Modified: ")
+    sb_push(lastmod)
     if is_206 == 1 {
         sb_push("\r\nContent-Range: bytes ")
         sb_push(int_to_str(off))
@@ -364,10 +378,11 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
     let full: String = str_concat(docroot, mpath)
     let range_hdr: String = header_value(req, "Range:")
     let inm: String = header_value(req, "If-None-Match:")
+    let ims: String = header_value(req, "If-Modified-Since:")
     if is_dir(full) {
         let idx: String = str_concat(full, "/index.html")
         if file_exists(idx) {
-            let n: i32 = serve_file(fd, idx, mpath, head_only, range_hdr, inm)
+            let n: i32 = serve_file(fd, idx, mpath, head_only, range_hdr, inm, ims)
             if n == -2 {
                 log_line(mlabel, mpath, 304, 0)
                 return 0
@@ -382,7 +397,7 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
         return 0
     }
     if file_exists(full) {
-        let n: i32 = serve_file(fd, full, mpath, head_only, range_hdr, inm)
+        let n: i32 = serve_file(fd, full, mpath, head_only, range_hdr, inm, ims)
         if n == -1 {
             send_str(fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
             log_line(mlabel, mpath, 500, 0)
