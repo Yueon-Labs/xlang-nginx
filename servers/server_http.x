@@ -12,6 +12,9 @@ module main
 //   - Range: bytes=... → 206 Partial Content + Content-Range (sendfile_range).
 //   - Conditional requests: ETag (size-mtime) + If-None-Match → 304 Not Modified.
 //   - GET/HEAD/POST/PUT/DELETE allowed → otherwise 405 Method Not Allowed.
+//   - OPTIONS → 204 No Content with CORS preflight headers (browser fetch support).
+//   - Access-Control-Allow-Origin: * on data responses, so browser frontends can
+//     fetch cross-origin.
 //   - 404 Not Found, 403 Forbidden (path traversal), 416-style → 200 full on bad range.
 //   - Access log to stdout: "METHOD PATH STATUS BYTES" (redirect to /dev/null when benching).
 
@@ -194,7 +197,7 @@ fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: 
         if str_eq(inm, etag) == 1 {
             send_str(fd, "HTTP/1.1 304 Not Modified\r\nETag: ")
             send_str(fd, etag)
-            send_str(fd, "\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            send_str(fd, "\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
             return -2
         }
     }
@@ -205,7 +208,7 @@ fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: 
             send_str(fd, etag)
             send_str(fd, "\r\nLast-Modified: ")
             send_str(fd, lastmod)
-            send_str(fd, "\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            send_str(fd, "\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
             return -2
         }
     }
@@ -242,6 +245,7 @@ fn serve_file(fd: i32, fpath: String, mpath: String, head_only: i32, range_hdr: 
         sb_push("/")
         sb_push(int_to_str(size))
     }
+    sb_push("\r\nAccess-Control-Allow-Origin: *")
     sb_push("\r\nConnection: keep-alive\r\n\r\n")
     send_str(fd, sb_str())
     if head_only == 0 {
@@ -279,7 +283,7 @@ fn serve_dir_listing(fd: i32, fpath: String, mpath: String, head_only: i32): i32
     sb_push("</ul></body></html>")
     let body: String = sb_str()
     let blen: i32 = str_len(body)
-    send_str(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ")
+    send_str(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: ")
     send_str(fd, int_to_str(blen))
     send_str(fd, "\r\nConnection: keep-alive\r\n\r\n")
     if head_only == 0 {
@@ -296,6 +300,7 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
     let is_post: i32 = str_starts_with(req, "POST ")
     let is_put: i32 = str_starts_with(req, "PUT ")
     let is_del: i32 = str_starts_with(req, "DELETE ")
+    let is_options: i32 = str_starts_with(req, "OPTIONS ")
     // POST: write the request body to docroot+path → 201 Created (upload).
     // Path traversal blocked by sanitize_path (same as GET).
     if is_post == 1 {
@@ -356,10 +361,18 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
         }
         return 0
     }
+    // OPTIONS: CORS preflight — advertise allowed methods/headers so browser
+    // frontends can fetch cross-origin. 204 No Content, no body, handled before
+    // any resource lookup (a preflight is about the resource's capabilities).
+    if is_options == 1 {
+        send_str(fd, "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+        log_line("OPTIONS", mpath, 204, 0)
+        return 0
+    }
     if is_get == 0 {
         if is_head == 0 {
             let m: String = parse_method(req)
-            send_str(fd, "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, HEAD, POST, PUT, DELETE\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            send_str(fd, "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, HEAD, POST, PUT, DELETE, OPTIONS\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
             log_line(m, mpath, 405, 0)
             return 0
         }
