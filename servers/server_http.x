@@ -447,7 +447,8 @@ fn handle(fd: i32, docroot: String, req: String, index_file: String): i32 {
 }
 
 // Is `req` a complete HTTP/1.1 request — full headers AND Content-Length bytes
-// of body? 1 = complete (ready to handle), 0 = need more data. Drives the
+// of body? 1 = complete (ready to handle), 0 = need more data, 2 = too large
+// (Content-Length exceeds the 16 MiB cap → caller sends 413). Drives the
 // per-connection accumulation loop in main: a POST body can arrive in a TCP
 // segment AFTER the headers, so we buffer per fd until this returns 1.
 fn request_complete(req: String): i32 {
@@ -456,6 +457,7 @@ fn request_complete(req: String): i32 {
     let cl: String = header_value(req, "Content-Length:")
     if str_len(cl) == 0 { return 1 }
     let need: i32 = str_to_int(cl)
+    if need > 16777216 { return 2 }
     let body: i32 = str_len(req) - (sep + 4)
     if body >= need { return 1 }
     return 0
@@ -605,9 +607,21 @@ fn main(): i32 {
                     close_fd(fd)
                 } else {
                     bufs[fd] = str_concat(bufs[fd], chunk)
-                    if request_complete(bufs[fd]) == 1 {
+                    let rc: i32 = request_complete(bufs[fd])
+                    if rc == 1 {
                         handle(fd, docroot, bufs[fd], index_file)
                         bufs[fd] = ""
+                    } else {
+                        // rc == 2 (Content-Length > 16 MiB cap) or the buffer
+                        // itself overshot the cap (no/lying Content-Length) → 413
+                        // Payload Too Large, drop the connection. Bounds memory
+                        // against a client that claims a huge body.
+                        if rc == 2 || str_len(bufs[fd]) > 16777216 {
+                            send_str(fd, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            bufs[fd] = ""
+                            epoll_del(fd)
+                            close_fd(fd)
+                        }
                     }
                 }
             } else {
