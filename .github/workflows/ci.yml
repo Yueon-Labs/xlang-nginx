@@ -74,11 +74,14 @@ jobs:
           echo "POST upload + GET roundtrip OK"
           # Large POST (> 64KB) — exercises recv_all. The old recv_str (one 64KB
           # recv) truncated this; recv_all drains the whole buffered request.
-          big=$(head -c 200000 < /dev/zero | tr '\0' 'x')
-          big_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data "$big" http://127.0.0.1:28099/big.txt)
+          # Send the body from a file (--data-binary @file) — a 200KB argv would
+          # hit "Argument list too long" (E2BIG) on the runner.
+          head -c 200000 /dev/zero | tr '\0' 'x' > /tmp/xl_big.bin
+          big_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @/tmp/xl_big.bin http://127.0.0.1:28099/big.txt)
           [ "$big_code" = "201" ] || { echo "FAIL: big POST code=$big_code"; kill $SRV_PID; exit 1; }
           rb_size=$(curl -s http://127.0.0.1:28099/big.txt | wc -c)
           [ "$rb_size" = "200000" ] || { echo "FAIL: big POST roundtrip size=$rb_size (want 200000)"; kill $SRV_PID; exit 1; }
+          rm -f /tmp/xl_big.bin
           echo "large POST (200KB) roundtrip OK"
           # PUT (idempotent create/replace, 200), then overwrite + verify, then DELETE.
           put_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data "put-v1" http://127.0.0.1:28099/put.txt)
