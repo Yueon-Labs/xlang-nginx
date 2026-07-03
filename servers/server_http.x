@@ -1,7 +1,9 @@
 module main
 
-// server_http <docroot> [port] | -c <conf> — HTTP/1.1 file server with method
-// routing, Range/partial-content (206), HEAD, POST/PUT upload, DELETE, keep-alive.
+// server_http <docroot> [port] [-w N] [-c <conf>] — HTTP/1.1 file server with
+// method routing, Range/partial-content (206), HEAD, POST/PUT upload, DELETE,
+// keep-alive. `-w N` runs an N-process prefork worker pool (SO_REUSEPORT, the
+// nginx multi-worker model — kernel load-balances connections across workers).
 // `-c <conf>` is config-driven (nginx-style directives: root/listen/index;);
 // otherwise the positional <docroot> [port] form is used.
 //
@@ -507,11 +509,18 @@ fn main(): i32 {
     // `-c <conf>`: config-driven (root/listen/index from a file). Otherwise the
     // positional `<docroot> [port]` form is used (backwards-compatible).
     let mut conf_path: String = ""
+    let mut workers: i32 = 1
     let mut ai: i32 = 1
     while ai < argc() {
         if argv(ai) == "-c" {
             if ai + 1 < argc() {
                 conf_path = argv(ai + 1)
+                ai += 1
+            }
+        }
+        if argv(ai) == "-w" {
+            if ai + 1 < argc() {
+                workers = str_to_int(argv(ai + 1))
                 ai += 1
             }
         }
@@ -526,15 +535,38 @@ fn main(): i32 {
         if argc() >= 2 { docroot = argv(1) }
         if argc() >= 3 { port = str_to_int(argv(2)) }
     }
-    let listen_fd: i32 = tcp_listen(port)
+    let mut listen_fd: i32 = 0
+    if workers > 1 {
+        listen_fd = tcp_listen_reuseport(port)
+    } else {
+        listen_fd = tcp_listen(port)
+    }
     set_nonblock(listen_fd)
-    epoll_create()
-    epoll_add(listen_fd)
     print_raw("xlang server_http on port ")
     print_raw(int_to_str(port))
     print_raw(", docroot=")
     print_raw(docroot)
+    if workers > 1 {
+        print_raw(", workers=")
+        print_raw(int_to_str(workers))
+    }
     print_raw("\n")
+    // Prefork worker pool (nginx model): each child inherits listen_fd; with
+    // SO_REUSEPORT the kernel hands each new connection to exactly one worker.
+    // The parent process is worker 0. workers==1 skips this (single process).
+    if workers > 1 {
+        let mut wi: i32 = 1
+        while wi < workers {
+            let pid: i32 = fork()
+            if pid == 0 {
+                break
+            }
+            wi += 1
+        }
+    }
+    // Each worker (parent + children) runs its own epoll loop on the shared port.
+    epoll_create()
+    epoll_add(listen_fd)
     // Per-fd request accumulation buffer, for multi-segment POSTs (body can
     // arrive in a TCP segment after the headers). Indexed by fd; fds are small
     // ints, so pre-fill a cap. Grow here if you raise ulimit -n past 4096.
