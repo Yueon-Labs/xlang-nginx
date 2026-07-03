@@ -442,6 +442,21 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
     return 0
 }
 
+// Is `req` a complete HTTP/1.1 request — full headers AND Content-Length bytes
+// of body? 1 = complete (ready to handle), 0 = need more data. Drives the
+// per-connection accumulation loop in main: a POST body can arrive in a TCP
+// segment AFTER the headers, so we buffer per fd until this returns 1.
+fn request_complete(req: String): i32 {
+    let sep: i32 = str_find(req, "\r\n\r\n")
+    if sep < 0 { return 0 }
+    let cl: String = header_value(req, "Content-Length:")
+    if str_len(cl) == 0 { return 1 }
+    let need: i32 = str_to_int(cl)
+    let body: i32 = str_len(req) - (sep + 4)
+    if body >= need { return 1 }
+    return 0
+}
+
 fn main(): i32 {
     let mut docroot: String = "webroot"
     if argc() >= 2 {
@@ -460,6 +475,15 @@ fn main(): i32 {
     print_raw(", docroot=")
     print_raw(docroot)
     print_raw("\n")
+    // Per-fd request accumulation buffer, for multi-segment POSTs (body can
+    // arrive in a TCP segment after the headers). Indexed by fd; fds are small
+    // ints, so pre-fill a cap. Grow here if you raise ulimit -n past 4096.
+    let bufs: Vec<String> = vec_new()
+    let mut bi: i32 = 0
+    while bi < 4096 {
+        bufs.push("")
+        bi += 1
+    }
     while true {
         let fd: i32 = epoll_wait(-1)
         if fd == listen_fd {
@@ -473,12 +497,30 @@ fn main(): i32 {
                 epoll_add(client)
             }
         } else {
-            let req: String = recv_str(fd)
-            if str_len(req) == 0 {
-                epoll_del(fd)
-                close_fd(fd)
+            if fd < 4096 {
+                // Drain whatever is buffered now, append to this fd's buffer,
+                // and handle only once the request is complete (headers +
+                // Content-Length body). Incomplete → wait for the next epoll event.
+                let chunk: String = recv_all(fd)
+                if str_len(chunk) == 0 {
+                    bufs[fd] = ""
+                    epoll_del(fd)
+                    close_fd(fd)
+                } else {
+                    bufs[fd] = str_concat(bufs[fd], chunk)
+                    if request_complete(bufs[fd]) == 1 {
+                        handle(fd, docroot, bufs[fd])
+                        bufs[fd] = ""
+                    }
+                }
             } else {
-                handle(fd, docroot, req)
+                let req: String = recv_str(fd)
+                if str_len(req) == 0 {
+                    epoll_del(fd)
+                    close_fd(fd)
+                } else {
+                    handle(fd, docroot, req)
+                }
             }
         }
     }
