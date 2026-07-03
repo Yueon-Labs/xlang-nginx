@@ -39,20 +39,34 @@ fn etag_of(fpath: String): String {
 }
 
 fn mime_of(path: String): String {
-    if str_find(path, ".html") >= 0 { return "text/html" }
-    if str_find(path, ".css") >= 0 { return "text/css" }
-    if str_find(path, ".js") >= 0 { return "application/javascript" }
-    if str_find(path, ".json") >= 0 { return "application/json" }
-    if str_find(path, ".txt") >= 0 { return "text/plain" }
-    if str_find(path, ".png") >= 0 { return "image/png" }
-    if str_find(path, ".jpg") >= 0 { return "image/jpeg" }
-    if str_find(path, ".gif") >= 0 { return "image/gif" }
-    if str_find(path, ".svg") >= 0 { return "image/svg+xml" }
-    if str_find(path, ".ico") >= 0 { return "image/x-icon" }
-    if str_find(path, ".pdf") >= 0 { return "application/pdf" }
-    if str_find(path, ".xml") >= 0 { return "application/xml" }
-    if str_find(path, ".zip") >= 0 { return "application/zip" }
-    if str_find(path, ".woff2") >= 0 { return "font/woff2" }
+    // Match by file EXTENSION (suffix), case-insensitive — not substring.
+    // (str_find would wrongly map "foo.html.bak" → text/html.)
+    let p: String = str_lower(path)
+    if str_ends_with(p, ".html") { return "text/html" }
+    if str_ends_with(p, ".htm") { return "text/html" }
+    if str_ends_with(p, ".css") { return "text/css" }
+    if str_ends_with(p, ".js") { return "application/javascript" }
+    if str_ends_with(p, ".mjs") { return "application/javascript" }
+    if str_ends_with(p, ".json") { return "application/json" }
+    if str_ends_with(p, ".txt") { return "text/plain" }
+    if str_ends_with(p, ".xml") { return "application/xml" }
+    if str_ends_with(p, ".svg") { return "image/svg+xml" }
+    if str_ends_with(p, ".png") { return "image/png" }
+    if str_ends_with(p, ".jpg") { return "image/jpeg" }
+    if str_ends_with(p, ".jpeg") { return "image/jpeg" }
+    if str_ends_with(p, ".gif") { return "image/gif" }
+    if str_ends_with(p, ".ico") { return "image/x-icon" }
+    if str_ends_with(p, ".webp") { return "image/webp" }
+    if str_ends_with(p, ".pdf") { return "application/pdf" }
+    if str_ends_with(p, ".zip") { return "application/zip" }
+    if str_ends_with(p, ".gz") { return "application/gzip" }
+    if str_ends_with(p, ".tar") { return "application/x-tar" }
+    if str_ends_with(p, ".mp4") { return "video/mp4" }
+    if str_ends_with(p, ".webm") { return "video/webm" }
+    if str_ends_with(p, ".mp3") { return "audio/mpeg" }
+    if str_ends_with(p, ".wasm") { return "application/wasm" }
+    if str_ends_with(p, ".woff") { return "font/woff" }
+    if str_ends_with(p, ".woff2") { return "font/woff2" }
     return "application/octet-stream"
 }
 
