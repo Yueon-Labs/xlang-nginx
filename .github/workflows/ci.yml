@@ -72,6 +72,14 @@ jobs:
           rb=$(curl -s http://127.0.0.1:28099/upload.txt)
           [ "$rb" = "$post_body" ] || { echo "FAIL: POST roundtrip body=[$rb]"; kill $SRV_PID; exit 1; }
           echo "POST upload + GET roundtrip OK"
+          # Large POST (> 64KB) — exercises recv_all. The old recv_str (one 64KB
+          # recv) truncated this; recv_all drains the whole buffered request.
+          big=$(head -c 200000 < /dev/zero | tr '\0' 'x')
+          big_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data "$big" http://127.0.0.1:28099/big.txt)
+          [ "$big_code" = "201" ] || { echo "FAIL: big POST code=$big_code"; kill $SRV_PID; exit 1; }
+          rb_size=$(curl -s http://127.0.0.1:28099/big.txt | wc -c)
+          [ "$rb_size" = "200000" ] || { echo "FAIL: big POST roundtrip size=$rb_size (want 200000)"; kill $SRV_PID; exit 1; }
+          echo "large POST (200KB) roundtrip OK"
           # PUT (idempotent create/replace, 200), then overwrite + verify, then DELETE.
           put_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data "put-v1" http://127.0.0.1:28099/put.txt)
           [ "$put_code" = "200" ] || { echo "FAIL: PUT code=$put_code"; kill $SRV_PID; exit 1; }
@@ -118,7 +126,7 @@ jobs:
           echo "directory trailing-slash redirect (301 + Location + /sub/ serves index) OK"
           kill $SRV_PID
           rm -rf "$DOCDIR"
-          echo "::notice::server_http functional test passed (GET + 404 + HEAD + POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect)"
+          echo "::notice::server_http functional test passed (GET + 404 + HEAD + large-POST + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect)"
 
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.

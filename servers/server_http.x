@@ -60,8 +60,9 @@ fn parse_method(req: String): String {
 }
 
 // Request body = everything after the blank line ("\r\n\r\n") separating
-// headers from body. recv_str reads one recv() (up to 64 KiB), so for small
-// POST bodies (headers + body in one packet) this captures the full body.
+// headers from body. main() reads the request via recv_all (drains the whole
+// buffered request, so bodies > 64 KiB are captured too, as long as they're
+// buffered when epoll fires).
 fn parse_body(req: String): String {
     let idx: i32 = str_find(req, "\r\n\r\n")
     if idx < 0 { return "" }
@@ -473,7 +474,11 @@ fn main(): i32 {
                 epoll_add(client)
             }
         } else {
-            let req: String = recv_str(fd)
+            // recv_all drains the whole buffered request (headers + body), so
+            // POST/PUT bodies > 64KB aren't truncated. Safe: client fds are
+            // non-blocking (set_nonblock above), so recv_all's drain loop exits
+            // on EAGAIN rather than hanging.
+            let req: String = recv_all(fd)
             if str_len(req) == 0 {
                 epoll_del(fd)
                 close_fd(fd)
