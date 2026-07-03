@@ -1,10 +1,11 @@
 module main
 
-// server_tls <docroot> <port> <cert> <key> — minimal HTTPS file server (GET only).
-// Blocking, one connection at a time: accept → TLS handshake → read request →
-// serve file → close. This is the TLS proof-of-concept (the FFI exists; a
-// concurrent HTTPS server would build on the epoll + multi-worker model).
-// Verified with: curl -k https://127.0.0.1:<port>/index.html
+// server_tls <docroot> <port> <cert> <key> [-w N] — minimal HTTPS file server
+// (GET only). Each worker runs a blocking accept → TLS handshake → read → serve
+// → close loop. `-w N` preforks N workers (SO_REUSEPORT) so N concurrent TLS
+// connections are handled in parallel (one per worker) — concurrent HTTPS
+// WITHOUT non-blocking TLS (SSL_WANT_READ/WRITE) complexity. Verified with:
+// curl -k https://127.0.0.1:<port>/index.html
 
 fn mime_of(path: String): String {
     if str_find(path, ".html") >= 0 { return "text/html" }
@@ -55,23 +56,60 @@ fn sanitize_path(path: String): i32 {
 }
 
 fn main(): i32 {
-    if argc() < 5 {
-        print_str("usage: server_tls <docroot> <port> <cert> <key>\n")
+    // Positional: docroot port cert key. Flag: -w N (worker pool, default 1).
+    let pos: Vec<String> = vec_new()
+    let mut workers: i32 = 1
+    let mut ai: i32 = 1
+    while ai < argc() {
+        if argv(ai) == "-w" {
+            if ai + 1 < argc() {
+                workers = str_to_int(argv(ai + 1))
+                ai += 1
+            }
+        } else {
+            pos.push(argv(ai))
+        }
+        ai += 1
+    }
+    if vec_len(pos) < 4 {
+        print_str("usage: server_tls <docroot> <port> <cert> <key> [-w N]\n")
         return 1
     }
-    let docroot: String = argv(1)
-    let port: i32 = str_to_int(argv(2))
-    let cert: String = argv(3)
-    let key: String = argv(4)
-    let listen_fd: i32 = tcp_listen(port)
+    let docroot: String = pos[0]
+    let port: i32 = str_to_int(pos[1])
+    let cert: String = pos[2]
+    let key: String = pos[3]
+    print_raw("xlang server_tls (HTTPS) on port ")
+    print_raw(int_to_str(port))
+    if workers > 1 {
+        print_raw(", workers=")
+        print_raw(int_to_str(workers))
+    }
+    print_raw("\n")
+    // Prefork worker pool: each worker creates its own listen socket (SO_REUSEPORT)
+    // and loads its own SSL_CTX, then runs the blocking accept->TLS->serve loop.
+    // N blocking workers handle up to N concurrent TLS connections (one each).
+    if workers > 1 {
+        let mut wi: i32 = 1
+        while wi < workers {
+            let pid: i32 = fork()
+            if pid == 0 {
+                break
+            }
+            wi += 1
+        }
+    }
+    let mut listen_fd: i32 = 0
+    if workers > 1 {
+        listen_fd = tcp_listen_reuseport(port)
+    } else {
+        listen_fd = tcp_listen(port)
+    }
     let ctx: i32 = tls_ctx_new(cert, key)
     if ctx < 0 {
         print_str("server_tls: failed to load cert/key\n")
         return 1
     }
-    print_raw("xlang server_tls (HTTPS) on port ")
-    print_raw(int_to_str(port))
-    print_raw("\n")
     while true {
         let fd: i32 = accept(listen_fd)
         if fd < 0 {
