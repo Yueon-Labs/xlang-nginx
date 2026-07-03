@@ -13,6 +13,9 @@ jobs:
       - name: Checkout xlang-nginx
         uses: actions/checkout@v4
 
+      - name: Install libssl-dev (for server_tls OpenSSL headers/link)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev
+
       - name: Clone xlang compiler
         run: git clone --depth 1 https://github.com/Yueon-Labs/xlang /tmp/xlang
 
@@ -217,3 +220,32 @@ jobs:
           kill $BE1 $BE2 $VH
           rm -rf "$RA" "$RB"
           echo "::notice::server_vhost functional test passed (path routing /api vs /)"
+
+      # Functional test for TLS (HTTPS): generate a self-signed cert, start
+      # server_tls, curl -k it (ignore self-signed), verify the body. This is the
+      # end-to-end verification of the OpenSSL TLS FFI (xlang#78).
+      - name: Functional test - server_tls (HTTPS via OpenSSL)
+        run: |
+          set -e
+          XLANGC=/tmp/xlang/target/release/xlangc
+          "$XLANGC" c servers/server_tls.x
+          cc -O2 -o /tmp/server_tls build/server_tls.c -lssl -lcrypto
+          DOCDIR=$(mktemp -d)
+          echo "hello over TLS" > "$DOCDIR/index.html"
+          # Self-signed cert (no passphrase). openssl is in libssl-dev.
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/tlskey.pem -out /tmp/tlscert.pem -days 1 -nodes -subj "/CN=localhost" >/dev/null 2>&1
+          /tmp/server_tls "$DOCDIR" 28102 /tmp/tlscert.pem /tmp/tlskey.pem &
+          TLS_PID=$!
+          sleep 0.5
+          tls_body=$(curl -k -s https://127.0.0.1:28102/index.html || echo CURL_FAILED)
+          if [ "$tls_body" != "hello over TLS" ]; then
+            echo "FAIL: HTTPS GET body=[$tls_body]"
+            kill $TLS_PID 2>/dev/null; rm -rf "$DOCDIR" /tmp/tls*.pem; exit 1
+          fi
+          # A second request (new connection) also works.
+          tls_body2=$(curl -k -s https://127.0.0.1:28102/index.html || echo CURL_FAILED)
+          [ "$tls_body2" = "hello over TLS" ] || { echo "FAIL: HTTPS 2nd request"; kill $TLS_PID; exit 1; }
+          kill $TLS_PID 2>/dev/null
+          pkill -P $TLS_PID 2>/dev/null || true
+          rm -rf "$DOCDIR" /tmp/tls*.pem
+          echo "::notice::server_tls HTTPS functional test passed (self-signed TLS, GET via curl -k)"
