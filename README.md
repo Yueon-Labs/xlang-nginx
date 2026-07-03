@@ -1,6 +1,6 @@
 # xlang-nginx — nginx replication in X Language
 
-HTTP servers written in [xlang](https://github.com/dsadsasdaddas/xlang), benchmarked against real **nginx 1.28** (built from source).
+HTTP servers written in [xlang](https://github.com/Yueon-Labs/xlang), benchmarked against real **nginx 1.28** (built from source).
 
 ## Servers
 
@@ -29,7 +29,7 @@ See `bench/RESULTS.md` for full methodology and data. Measured with the **pure-x
 
 ## Build
 
-Requires the [xlang compiler](https://github.com/dsadsasdaddas/xlang):
+Requires the [xlang compiler](https://github.com/Yueon-Labs/xlang):
 ```sh
 xlangc c servers/server_prefork.x && cc -O2 -o server server_prefork.c && ./server
 ```
