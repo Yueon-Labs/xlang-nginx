@@ -13,11 +13,22 @@
 > | xlang `server_web` (1 epoll proc) | **~44k** |
 > | nginx 1.28 `worker_processes 1` | ~36–38k |
 >
-> **xlang wins ~20% per core.** (nginx `worker_processes auto` on this 64-core
-> box hits ~180k — but that's 64 cores vs xlang's 1, not comparable.) So the
-> "xlang beats nginx" claim holds on a fair per-core file-serving basis. The
-> historical python/blocking numbers below are kept only for the methodology
-> record.
+> **xlang wins ~20% per core.** And it **scales across cores** now that
+> `server_web` supports `-w N` (nginx's multi-worker model — prefork + per-worker
+> epoll on a SO_REUSEPORT socket). `server_web -w` scaling (same file, c=16):
+>
+> | workers | req/s |
+> |---|---|
+> | 1 | ~45k |
+> | 4 | ~121k |
+> | 8 | ~152k |
+> | 16 | **~199k** |
+> | 32 | ~184k (scheduling plateau) |
+>
+> So `server_web -w 16` (~199k) **beats nginx `worker_processes auto` (~180k,
+> 64 cores)** — with a quarter of the cores. xlang now beats nginx both per-core
+> and multi-core for keepalive file-serving. The historical python/blocking
+> numbers below are kept only for the methodology record.
 
 ## Setup
 - Server: wzu (Ubuntu 22.04, x86_64), **localhost loopback**.

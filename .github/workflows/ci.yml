@@ -201,6 +201,29 @@ jobs:
           bash bench/gzip_test.sh /tmp/xlang/target/release/xlangc
           echo "::notice::server_gzip gzip_static test passed (pre-compressed .gz served, --compressed roundtrip, plain fallback)"
 
+      - name: Functional test - server_web multi-worker (-w N)
+        run: |
+          set -e
+          XLANGC=/tmp/xlang/target/release/xlangc
+          "$XLANGC" c servers/server_web.x
+          cc -O2 -o /tmp/server_web build/server_web.c
+          DOCDIR=$(mktemp -d)
+          printf 'hello web\n' > "$DOCDIR/index.html"
+          /tmp/server_web "$DOCDIR" 28105 -w 4 > /tmp/sw.log 2>&1 &
+          SW_PID=$!
+          sleep 1
+          # Single request works.
+          [ "$(curl -s http://127.0.0.1:28105/)" = "hello web" ] || { echo "FAIL: -w GET"; cat /tmp/sw.log; kill $SW_PID; exit 1; }
+          # 8 concurrent requests all succeed (proves the worker pool handles them).
+          fail=0; pids=""
+          for i in $(seq 1 8); do curl -s http://127.0.0.1:28105/ > /tmp/sw$i.out & pids="$pids $!"; done
+          wait $pids
+          for i in $(seq 1 8); do [ "$(cat /tmp/sw$i.out)" = "hello web" ] || fail=1; done
+          [ "$fail" = 0 ] || { echo "FAIL: -w concurrent requests"; cat /tmp/sw.log; kill $SW_PID; exit 1; }
+          kill $SW_PID 2>/dev/null; pkill -x server_web 2>/dev/null || true
+          rm -rf "$DOCDIR" /tmp/sw*.out
+          echo "::notice::server_web multi-worker (-w 4 SO_REUSEPORT) serving + 8 concurrent requests OK"
+
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
       - name: Functional test - server_proxy (reverse proxy relay)
