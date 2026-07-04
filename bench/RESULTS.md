@@ -1,5 +1,15 @@
 # xlang HTTP server vs nginx — benchmark
 
+> **Current snapshot (2026-07-04).** The numbers below used the *blocking*
+> `server_loop` + a python client, which undercounts (~2–3×, the README's GIL
+> note). The authoritative **xwrk** (pure-xlang, keepalive) numbers live in the
+> top-level **README.md** (e.g. keepalive prefork ≈ **129k req/s** vs nginx
+> 1.28 ≈ 77k). A fresh xwrk run on this box (server_http `-w 4`, 16 keepalive
+> conns, 6 s) measured **~180–230k req/s** — even higher than the prior README
+> claim. (A direct xwrk-vs-nginx re-measurement on this host is blocked by a
+> keepalive second-request stall between xwrk and nginx; the xlang→xlang path
+> is unaffected. Use the README's xwrk comparison for the head-to-head.)
+
 ## Setup
 - Server: wzu (Ubuntu 22.04, x86_64), **localhost loopback**.
 - **xlang server**: `examples/server_loop.x` (blocking, one connection at a time), compiled xlang → C → `cc -O2`.
