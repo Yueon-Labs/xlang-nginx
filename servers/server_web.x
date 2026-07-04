@@ -1,6 +1,9 @@
 module main
 
-// server_web <docroot> — epoll event-loop HTTP FILE server (nginx's real job).
+// server_web <docroot> [port] [-w N] — epoll event-loop HTTP FILE server
+// (nginx's real job). `-w N` runs an N-process prefork worker pool, each
+// worker its own epoll loop on a SO_REUSEPORT socket (nginx's multi-worker
+// model — the kernel load-balances connections across workers). Default: 1.
 // Parses each request line (GET /path HTTP/1.1), maps /path -> docroot/path
 // ("/" -> index.html), serves the file with Content-Length/Type + 200, or 404.
 // Connection closed after each response. Built on the epoll builtins; tests
@@ -79,14 +82,49 @@ fn serve(fd: i32, full: String, path: String): i32 {
 
 fn main(): i32 {
     let mut docroot: String = "webroot"
-    if argc() >= 2 {
-        docroot = argv(1)
-    }
     let mut port: i32 = 28082
-    if argc() >= 3 {
-        port = str_to_int(argv(2))
+    let mut workers: i32 = 1
+    let mut got_doc: i32 = 0
+    let mut got_port: i32 = 0
+    let mut ai: i32 = 1
+    while ai < argc() {
+        let a: String = argv(ai)
+        if str_eq(a, "-w") {
+            ai = ai + 1
+            if ai < argc() {
+                workers = str_to_int(argv(ai))
+            }
+        } else {
+            if got_doc == 0 {
+                docroot = a
+                got_doc = 1
+            } else {
+                if got_port == 0 {
+                    port = str_to_int(a)
+                    got_port = 1
+                }
+            }
+        }
+        ai = ai + 1
     }
-    let listen_fd: i32 = tcp_listen(port)
+    if workers < 1 {
+        workers = 1
+    }
+    // Prefork worker pool (nginx model): fork BEFORE listen so each worker
+    // creates its OWN socket on the shared port (SO_REUSEPORT) — the kernel
+    // spreads incoming connections across the N worker sockets (one acceptor
+    // woken per connection, no thundering herd). The parent is worker 0.
+    if workers > 1 {
+        let mut wi: i32 = 1
+        while wi < workers {
+            let pid: i32 = fork()
+            if pid == 0 {
+                break
+            }
+            wi = wi + 1
+        }
+    }
+    let listen_fd: i32 = tcp_listen_reuseport(port)
     set_nonblock(listen_fd)
     epoll_create()
     epoll_add(listen_fd)
