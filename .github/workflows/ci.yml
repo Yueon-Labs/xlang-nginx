@@ -196,6 +196,11 @@ jobs:
           rm -rf "$DOCDIR"
           echo "::notice::server_http functional test passed (GET + 404 + HEAD + MIME + large-POST + max-size + PUT + DELETE + ETag-304 + LastMod-304 + CORS + dir-redirect + config + multi-worker)"
 
+      - name: Functional test - server_gzip (gzip_static)
+        run: |
+          bash bench/gzip_test.sh /tmp/xlang/target/release/xlangc
+          echo "::notice::server_gzip gzip_static test passed (pre-compressed .gz served, --compressed roundtrip, plain fallback)"
+
       # Functional test for the reverse proxy: start a backend, start the proxy,
       # curl through the proxy, verify the response is relayed.
       - name: Functional test - server_proxy (reverse proxy relay)

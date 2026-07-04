@@ -1,11 +1,12 @@
 module main
 
-// server_gzip <docroot> [port] — HTTP/1.1 file server with gzip negotiation.
-// Reads Accept-Encoding and adds Vary: Accept-Encoding to text responses.
-// This is the infrastructure for gzip compression; the actual deflate step
-// would call zlib (future). Without zlib, responses are served uncompressed
-// but with the negotiation headers in place, so adding compression is just
-// one call away.
+// server_gzip <docroot> [port] — HTTP/1.1 file server with gzip_static.
+// Reads Accept-Encoding; for text responses, if a pre-compressed <file>.gz
+// exists it is served directly (binary-safe via sendfile) with
+// Content-Encoding: gzip — nginx's gzip_static model (no on-the-fly zlib
+// compression: deploy files pre-gzipped as file.gz alongside file). Without
+// a .gz variant (or no gzip accepted), the file is served uncompressed with
+// Vary: Accept-Encoding.
 
 struct Range {
     start: i32
@@ -126,6 +127,30 @@ fn handle(fd: i32, docroot: String, req: String): i32 {
     let mut should_compress: i32 = 0
     if wants_gzip == 1 {
         if is_text_mime(mime) == 1 { should_compress = 1 }
+    }
+    // gzip_static (nginx): if the client accepts gzip and a pre-compressed
+    // <file>.gz exists, serve IT directly (binary-safe via sendfile) with
+    // Content-Encoding: gzip — no on-the-fly zlib compression needed.
+    if should_compress == 1 {
+        let gz_full: String = str_concat(full, ".gz")
+        if file_exists(gz_full) == 1 {
+            let gsize: i32 = file_size(gz_full)
+            let gfd: i32 = cache_open(gz_full)
+            sb_new()
+            sb_push("HTTP/1.1 200 OK")
+            sb_push("\r\nContent-Type: ")
+            sb_push(mime)
+            sb_push("\r\nContent-Encoding: gzip")
+            sb_push("\r\nContent-Length: ")
+            sb_push(int_to_str(gsize))
+            sb_push("\r\nVary: Accept-Encoding")
+            sb_push("\r\nConnection: keep-alive\r\n\r\n")
+            send_str(fd, sb_str())
+            if is_head == 0 {
+                sendfile_fd(fd, gfd, gsize)
+            }
+            return 0
+        }
     }
     let data: String = read_file(full)
     let dlen: i32 = str_len(data)
