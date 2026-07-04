@@ -397,12 +397,8 @@ fn handle(fd: i32, docroot: String, req: String, index_file: String): i32 {
             return 0
         }
     }
-    let mut head_only: i32 = 0
-    let mut mlabel: String = "GET"
-    if is_head == 1 {
-        head_only = 1
-        mlabel = "HEAD"
-    }
+    let head_only: i32 = if is_head == 1 { 1 } else { 0 }
+    let mlabel: String = if is_head == 1 { "HEAD" } else { "GET" }
     if sanitize_path(mpath) < 0 {
         send_str(fd, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
         log_line(mlabel, mpath, 403, 0)
@@ -430,8 +426,7 @@ fn handle(fd: i32, docroot: String, req: String, index_file: String): i32 {
                 log_line(mlabel, mpath, 304, 0)
                 return 0
             }
-            let mut code: i32 = 200
-            if str_len(range_hdr) > 0 { code = 206 }
+            let code: i32 = if str_len(range_hdr) > 0 { 206 } else { 200 }
             log_line(mlabel, mpath, code, n)
             return 0
         }
@@ -450,8 +445,7 @@ fn handle(fd: i32, docroot: String, req: String, index_file: String): i32 {
             log_line(mlabel, mpath, 304, 0)
             return 0
         }
-        let mut code: i32 = 200
-        if str_len(range_hdr) > 0 { code = 206 }
+        let code: i32 = if str_len(range_hdr) > 0 { 206 } else { 200 }
         log_line(mlabel, mpath, code, n)
         return 0
     }
