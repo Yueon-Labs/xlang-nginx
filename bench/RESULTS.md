@@ -1,14 +1,23 @@
 # xlang HTTP server vs nginx — benchmark
 
-> **Current snapshot (2026-07-04).** The numbers below used the *blocking*
-> `server_loop` + a python client, which undercounts (~2–3×, the README's GIL
-> note). The authoritative **xwrk** (pure-xlang, keepalive) numbers live in the
-> top-level **README.md** (e.g. keepalive prefork ≈ **129k req/s** vs nginx
-> 1.28 ≈ 77k). A fresh xwrk run on this box (server_http `-w 4`, 16 keepalive
-> conns, 6 s) measured **~180–230k req/s** — even higher than the prior README
-> claim. (A direct xwrk-vs-nginx re-measurement on this host is blocked by a
-> keepalive second-request stall between xwrk and nginx; the xlang→xlang path
-> is unaffected. Use the README's xwrk comparison for the head-to-head.)
+> **Current snapshot (2026-07-04, wzu, corrected xwrk).** The old xwrk had a
+> coalesced-response bug (fixed in xlang-linux#126) that **inflated xlang
+> counts and hung against fast servers** — so the README's "129k vs nginx 77k"
+> and the "~180–230k" figure measured before the fix are **not reliable**.
+>
+> With the fixed xwrk, the **fair per-core** comparison (both serving the same
+> 6-byte `index.html`, 1 core, 16 keepalive conns, 6 s):
+>
+> | server | req/s |
+> |---|---|
+> | xlang `server_web` (1 epoll proc) | **~44k** |
+> | nginx 1.28 `worker_processes 1` | ~36–38k |
+>
+> **xlang wins ~20% per core.** (nginx `worker_processes auto` on this 64-core
+> box hits ~180k — but that's 64 cores vs xlang's 1, not comparable.) So the
+> "xlang beats nginx" claim holds on a fair per-core file-serving basis. The
+> historical python/blocking numbers below are kept only for the methodology
+> record.
 
 ## Setup
 - Server: wzu (Ubuntu 22.04, x86_64), **localhost loopback**.
