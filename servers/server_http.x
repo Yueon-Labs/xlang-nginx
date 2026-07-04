@@ -312,8 +312,54 @@ fn serve_dir_listing(fd: i32, fpath: String, mpath: String, head_only: i32): i32
     return blen
 }
 
-fn handle(fd: i32, docroot: String, req: String, index_file: String): i32 {
+// Minimal base64 decode (RFC 4648). Handles padding. Returns "" on invalid input.
+fn b64_val(c: i32): i32 {
+    if c >= 65 { if c <= 90 { return c - 65 } }
+    if c >= 97 { if c <= 122 { return c - 97 + 26 } }
+    if c >= 48 { if c <= 57 { return c - 48 + 52 } }
+    if c == 43 { return 62 }
+    if c == 47 { return 63 }
+    return -1
+}
+
+fn b64_decode(s: String): String {
+    let n: i32 = str_len(s)
+    if n == 0 { return "" }
+    sb_new()
+    let mut i: i32 = 0
+    while i + 3 < n {
+        let a: i32 = b64_val(str_char_at(s, i))
+        let b: i32 = b64_val(str_char_at(s, i + 1))
+        let c: i32 = b64_val(str_char_at(s, i + 2))
+        let d: i32 = b64_val(str_char_at(s, i + 3))
+        if a < 0 { break }
+        if b < 0 { break }
+        sb_push_char((a << 2) | (b >> 4))
+        if c >= 0 {
+            sb_push_char(((b & 15) << 4) | (c >> 2))
+            if d >= 0 {
+                sb_push_char(((c & 3) << 6) | d)
+            }
+        }
+        i = i + 4
+    }
+    return sb_str()
+}
+
+fn handle(fd: i32, docroot: String, req: String, index_file: String, auth_user: String, auth_pass: String): i32 {
     let mpath: String = parse_path(req, index_file)
+    // HTTP Basic Auth: if auth credentials are configured, validate the
+    // Authorization header before serving anything.
+    if str_len(auth_user) > 0 {
+        let expected: String = str_concat(str_concat(auth_user, ":"), auth_pass)
+        let encoded: String = header_value(req, "Authorization: Basic ")
+        let decoded: String = b64_decode(encoded)
+        if str_eq(decoded, expected) == 0 {
+            send_str(fd, "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Restricted\"\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
+            log_line("AUTH", mpath, 401, 0)
+            return 0
+        }
+    }
     // Prefix-check the method (avoids a per-request str_slice for routing).
     let is_get: i32 = str_starts_with(req, "GET ")
     let is_head: i32 = str_starts_with(req, "HEAD ")
@@ -520,6 +566,8 @@ fn main(): i32 {
     // positional `<docroot> [port]` form is used (backwards-compatible).
     let mut conf_path: String = ""
     let mut workers: i32 = 1
+    let mut auth_user: String = ""
+    let mut auth_pass: String = ""
     let mut ai: i32 = 1
     while ai < argc() {
         if argv(ai) == "-c" {
@@ -531,6 +579,17 @@ fn main(): i32 {
         if argv(ai) == "-w" {
             if ai + 1 < argc() {
                 workers = str_to_int(argv(ai + 1))
+                ai += 1
+            }
+        }
+        if argv(ai) == "-auth" {
+            if ai + 1 < argc() {
+                let cred: String = argv(ai + 1)
+                let colon: i32 = str_find(cred, ":")
+                if colon >= 0 {
+                    auth_user = str_slice(cred, 0, colon)
+                    auth_pass = str_slice(cred, colon + 1, str_len(cred))
+                }
                 ai += 1
             }
         }
@@ -617,7 +676,7 @@ fn main(): i32 {
                     bufs[fd] = str_concat(bufs[fd], chunk)
                     let rc: i32 = request_complete(bufs[fd])
                     if rc == 1 {
-                        handle(fd, docroot, bufs[fd], index_file)
+                        handle(fd, docroot, bufs[fd], index_file, auth_user, auth_pass)
                         bufs[fd] = ""
                     } else {
                         // rc == 2 (Content-Length > 16 MiB cap) or the buffer
@@ -638,7 +697,7 @@ fn main(): i32 {
                     epoll_del(fd)
                     close_fd(fd)
                 } else {
-                    handle(fd, docroot, req, index_file)
+                    handle(fd, docroot, req, index_file, auth_user, auth_pass)
                 }
             }
         }
